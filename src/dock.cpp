@@ -95,6 +95,40 @@ QString platform_label(const std::string &key)
 	return QObject::tr("Something else");
 }
 
+/**
+ * Read a plugin key out of whatever somebody pasted.
+ *
+ * The dashboard's copy button hands over the whole URL,
+ * https://plasmastream.live/api/plugin/<token>, because that is the useful thing
+ * to look at on a web page. This asked for "the key" and then built that same URL
+ * around it, so pasting the obvious thing produced the prefix twice and a 404
+ * that blamed the key.
+ *
+ * Rather than telling people to edit a URL by hand, take either. Anything after
+ * the last /api/plugin/ is the token, and a bare token has no such marker and is
+ * returned untouched.
+ */
+std::string read_token(const QString &pasted)
+{
+	QString token = pasted.trimmed();
+
+	const QString marker = QStringLiteral("/api/plugin/");
+	const int at = token.lastIndexOf(marker);
+
+	if (at >= 0) {
+		token = token.mid(at + marker.length());
+	}
+
+	// A copied link can pick up a query string or a trailing slash on the way.
+	token = token.section('?', 0, 0).section('#', 0, 0);
+
+	while (token.endsWith('/')) {
+		token.chop(1);
+	}
+
+	return token.trimmed().toStdString();
+}
+
 /** A short, stable id for a destination somebody typed in by hand. */
 std::string make_local_id()
 {
@@ -257,6 +291,7 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	edit_ = new QPushButton(tr("Edit"), this);
 	remove_ = new QPushButton(tr("Remove"), this);
 	fetch_ = new QPushButton(tr("Sync from PlasmaStream"), this);
+	keyButton_ = new QPushButton(tr("Plugin key..."), this);
 
 	notice_ = new QLabel(this);
 	notice_->setWordWrap(true);
@@ -272,13 +307,17 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	layout->addWidget(table_);
 	layout->addWidget(empty_);
 	layout->addLayout(buttons);
-	layout->addWidget(fetch_);
+	auto *syncRow = new QHBoxLayout;
+	syncRow->addWidget(fetch_, 1);
+	syncRow->addWidget(keyButton_);
+	layout->addLayout(syncRow);
 	layout->addWidget(notice_);
 
 	connect(add_, &QPushButton::clicked, this, &MultistreamDock::addDestination);
 	connect(edit_, &QPushButton::clicked, this, &MultistreamDock::editSelected);
 	connect(remove_, &QPushButton::clicked, this, &MultistreamDock::removeSelected);
 	connect(fetch_, &QPushButton::clicked, this, &MultistreamDock::fetchFromPlasmaStream);
+	connect(keyButton_, &QPushButton::clicked, this, &MultistreamDock::changeToken);
 	connect(table_, &QTableWidget::itemSelectionChanged, this,
 		&MultistreamDock::updateButtons);
 
@@ -432,22 +471,50 @@ void MultistreamDock::removeSelected()
  * because a streamer can close the dock while a slow request is still in flight
  * and delivering a result to a destroyed widget is a crash.
  */
+/**
+ * Set, change, or clear the plugin key.
+ *
+ * Reachable at any time, from its own button. The first version only asked when
+ * nothing was stored, which meant a key the server rejected could never be
+ * replaced: sync failed, the prompt was skipped because a key existed, and there
+ * was no way in from the interface at all.
+ *
+ * Pre-filled with whatever is stored so a typo can be corrected rather than
+ * retyped, and clearing the box is how somebody disconnects from their account
+ * without touching the destinations they have already set up.
+ */
+void MultistreamDock::changeToken()
+{
+	bool ok = false;
+
+	const QString entered = QInputDialog::getText(
+		this, tr("Plugin key"),
+		tr("Paste the link from your PlasmaStream dashboard, under Multistream. The "
+		   "whole link is fine, or just the key at the end of it.\n\nLeave it empty to "
+		   "disconnect from your account. Your destinations here stay as they are."),
+		QLineEdit::Normal, QString::fromStdString(config().token), &ok);
+
+	if (!ok) {
+		return;
+	}
+
+	config().token = read_token(entered);
+	save_config();
+
+	setNotice(config().token.empty() ? tr("Plugin key cleared.") : tr("Plugin key saved."),
+		  false);
+}
+
 void MultistreamDock::fetchFromPlasmaStream()
 {
 	if (config().token.empty()) {
-		bool ok = false;
-		const QString entered = QInputDialog::getText(
-			this, tr("Sync from PlasmaStream"),
-			tr("Paste the plugin key from your PlasmaStream dashboard, under "
-			   "Multistream."),
-			QLineEdit::Normal, QString(), &ok);
+		changeToken();
 
-		if (!ok || entered.trimmed().isEmpty()) {
+		// Still nothing means they cancelled, and pressing sync with no key is
+		// not an error worth a red message.
+		if (config().token.empty()) {
 			return;
 		}
-
-		config().token = entered.trimmed().toStdString();
-		save_config();
 	}
 
 	setNotice(tr("Checking with PlasmaStream..."), false);
@@ -480,8 +547,15 @@ void MultistreamDock::applyFetch(const HttpResponse &response)
 	fetch_->setEnabled(true);
 
 	if (response.status == 404) {
-		setNotice(tr("That plugin key was not recognised. Copy it again from your "
-			     "dashboard."),
+		// Forgotten, not kept. A key the server rejects is of no use, and holding
+		// on to it meant the next press of Sync skipped the prompt and failed
+		// again with no way in to correct it.
+		config().token.clear();
+		save_config();
+
+		setNotice(tr("That plugin key was not recognised, so it has been cleared. Press "
+			     "Sync again and paste the link from your dashboard's Multistream "
+			     "page."),
 			  true);
 		return;
 	}
