@@ -210,12 +210,45 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 
 	table_ = new QTableWidget(0, 4, this);
 	table_->setHorizontalHeaderLabels({tr("On"), tr("Destination"), tr("Where"), tr("Status")});
-	table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-	table_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+
+	// Every column gets a mode, which the first version did not do. Setting only
+	// the middle two to Stretch left the checkbox column on Qt's 100px default,
+	// so a third of a narrow dock went to a tick box and the two columns anybody
+	// actually reads were squeezed until their own headers truncated.
+	//
+	// The checkbox is as wide as a checkbox. The name takes whatever is left,
+	// because it is the one field with no natural length. The platform and the
+	// status size to their own text, which is short and known.
+	QHeaderView *header = table_->horizontalHeader();
+	header->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+	header->setSectionResizeMode(1, QHeaderView::Stretch);
+	header->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+	header->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+	header->setStretchLastSection(false);
+	header->setHighlightSections(false);
+
 	table_->verticalHeader()->setVisible(false);
+	table_->verticalHeader()->setDefaultSectionSize(24);
 	table_->setSelectionBehavior(QAbstractItemView::SelectRows);
 	table_->setSelectionMode(QAbstractItemView::SingleSelection);
 	table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+	table_->setWordWrap(false);
+	table_->setAlternatingRowColors(true);
+
+	// Nothing to scroll sideways to once the columns fit the dock, and a
+	// scrollbar that appears for one pixel of overflow is worse than a name
+	// elided with an ellipsis.
+	table_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+	table_->setTextElideMode(Qt::ElideRight);
+
+	// An empty table is a large blank rectangle with no hint of what to do, and
+	// that is the state every single person sees first.
+	empty_ = new QLabel(tr("No destinations yet.\n\nPress Add to send this stream somewhere "
+			       "as well as wherever OBS is already sending it."),
+			    this);
+	empty_->setAlignment(Qt::AlignCenter);
+	empty_->setWordWrap(true);
+	empty_->setEnabled(false);
 
 	add_ = new QPushButton(tr("Add"), this);
 	edit_ = new QPushButton(tr("Edit"), this);
@@ -234,6 +267,7 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 
 	auto *layout = new QVBoxLayout(this);
 	layout->addWidget(table_);
+	layout->addWidget(empty_);
 	layout->addLayout(buttons);
 	layout->addWidget(fetch_);
 	layout->addWidget(notice_);
@@ -256,8 +290,24 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	connect(poll_, &QTimer::timeout, this, &MultistreamDock::refreshStatuses);
 	poll_->start();
 
+	// A floor rather than a fixed size, so it can still be dragged narrower or
+	// docked into a thin column. It just cannot open there by default.
+	setMinimumWidth(360);
+
 	rebuildTable();
 	updateButtons();
+}
+
+QSize MultistreamDock::sizeHint() const
+{
+	return {420, 460};
+}
+
+void MultistreamDock::updateEmptyState()
+{
+	const bool any = !config().destinations.empty();
+	table_->setVisible(any);
+	empty_->setVisible(!any);
 }
 
 void MultistreamDock::setNotice(const QString &text, bool warning)
@@ -270,6 +320,8 @@ void MultistreamDock::setNotice(const QString &text, bool warning)
 void MultistreamDock::rebuildTable()
 {
 	const std::vector<Destination> &destinations = config().destinations;
+
+	updateEmptyState();
 
 	table_->setRowCount(static_cast<int>(destinations.size()));
 
