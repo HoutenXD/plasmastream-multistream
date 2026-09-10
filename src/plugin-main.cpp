@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "config.hpp"
 #include "dock.hpp"
+#include "http.hpp"
 #include "outputs.hpp"
 
 #include <obs-frontend-api.h>
@@ -69,6 +70,7 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 
 bool obs_module_load(void)
 {
+	plasmastream::http_init();
 	plasmastream::load_config();
 
 	obs_frontend_add_event_callback(on_frontend_event, nullptr);
