@@ -31,14 +31,8 @@ if(ENABLE_FRONTEND_API)
 endif()
 
 if(ENABLE_QT)
-  # Network as well as Widgets: pulling a streamer's destinations from their
-  # PlasmaStream account is one HTTP GET, and Qt already being here is cheaper
-  # than linking curl for it.
-  find_package(Qt6 COMPONENTS Widgets Core Network)
-  target_link_libraries(
-    ${CMAKE_PROJECT_NAME}
-    PRIVATE Qt6::Core Qt6::Widgets Qt6::Network
-  )
+  find_package(Qt6 COMPONENTS Widgets Core)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets)
   target_compile_options(
     ${CMAKE_PROJECT_NAME}
     PRIVATE $<$<C_COMPILER_ID:Clang,AppleClang>:-Wno-quoted-include-in-framework-header -Wno-comma>
@@ -49,6 +43,17 @@ if(ENABLE_QT)
   )
 endif()
 
+# libcurl, for the one HTTP GET that syncs destinations.
+#
+# NOT Qt Network, which was the first attempt and cannot do HTTPS inside OBS. Qt
+# loads a TLS backend from a "tls" plugin directory, and OBS ships "platforms",
+# "styles" and "imageformats" and not that one, so every https request failed
+# before leaving the process.
+#
+# curl is not a new dependency: OBS ships libcurl.dll and uses it itself.
+find_package(CURL REQUIRED)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE CURL::libcurl)
+
 target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE
@@ -57,6 +62,8 @@ target_sources(
     src/config.hpp
     src/dock.cpp
     src/dock.hpp
+    src/http.cpp
+    src/http.hpp
     src/outputs.cpp
     src/outputs.hpp
 )

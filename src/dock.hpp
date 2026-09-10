@@ -18,13 +18,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include "http.hpp"
+
 #include <QWidget>
 
 class QLabel;
 class QPushButton;
 class QTableWidget;
 class QTimer;
-class QNetworkAccessManager;
 
 namespace plasmastream {
 
@@ -66,6 +67,8 @@ private:
 	/** Enable or disable the buttons that need a selected row. */
 	void updateButtons();
 	void setNotice(const QString &text, bool warning);
+	/** Handle a finished sync, back on the Qt thread. */
+	void applyFetch(const HttpResponse &response);
 
 	QTableWidget *table_ = nullptr;
 	QLabel *empty_ = nullptr;
@@ -75,7 +78,6 @@ private:
 	QPushButton *fetch_ = nullptr;
 	QLabel *notice_ = nullptr;
 	QTimer *poll_ = nullptr;
-	QNetworkAccessManager *network_ = nullptr;
 };
 
 /** Build the dock and hand it to OBS. Call once, during module load. */

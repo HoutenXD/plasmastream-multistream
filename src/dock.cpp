@@ -19,7 +19,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "dock.hpp"
 
 #include "config.hpp"
+#include "http.hpp"
 #include "outputs.hpp"
+
+#include <thread>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -34,9 +37,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QNetworkRequest>
+#include <QApplication>
+#include <QJsonParseError>
+#include <QPointer>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTimer>
@@ -279,8 +282,6 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	connect(table_, &QTableWidget::itemSelectionChanged, this,
 		&MultistreamDock::updateButtons);
 
-	network_ = new QNetworkAccessManager(this);
-
 	// Polled rather than pushed. libobs fires its signals on its own thread and
 	// the table has to be touched from the Qt thread, so the choice is a queued
 	// connection per output or one timer that reads a snapshot. The timer is far
@@ -423,12 +424,17 @@ void MultistreamDock::removeSelected()
  * had entered and leave them with destinations that cannot connect. Existing
  * entries keep their key and take the server's name and address; new ones arrive
  * without a key and the table says so.
+ *
+ * ## Off the UI thread
+ *
+ * curl blocks, and blocking here would freeze OBS's whole interface for as long
+ * as the request took. The worker holds a QPointer rather than a raw `this`,
+ * because a streamer can close the dock while a slow request is still in flight
+ * and delivering a result to a destroyed widget is a crash.
  */
 void MultistreamDock::fetchFromPlasmaStream()
 {
-	const QString token = QString::fromStdString(config().token).trimmed();
-
-	if (token.isEmpty()) {
+	if (config().token.empty()) {
 		bool ok = false;
 		const QString entered = QInputDialog::getText(
 			this, tr("Sync from PlasmaStream"),
@@ -447,99 +453,127 @@ void MultistreamDock::fetchFromPlasmaStream()
 	setNotice(tr("Checking with PlasmaStream..."), false);
 	fetch_->setEnabled(false);
 
-	const QString url = QStringLiteral("https://plasmastream.live/api/plugin/") +
-			    QString::fromStdString(config().token);
+	const std::string url = "https://plasmastream.live/api/plugin/" + config().token;
 
-	QNetworkRequest request{QUrl(url)};
-	request.setHeader(QNetworkRequest::UserAgentHeader,
-			  QStringLiteral("PlasmaStream-Multistream-OBS"));
+	QPointer<MultistreamDock> alive(this);
 
-	QNetworkReply *reply = network_->get(request);
+	std::thread([alive, url]() {
+		const HttpResponse response = http_get(url);
 
-	connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-		reply->deleteLater();
-		fetch_->setEnabled(true);
-
-		if (reply->error() != QNetworkReply::NoError) {
-			const int status =
-				reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-
-			// A 404 is the one worth naming, because it is the only one the
-			// streamer can fix and it has exactly one cause.
-			setNotice(status == 404
-					  ? tr("That plugin key was not recognised. Copy it "
-					       "again from your dashboard.")
-					  : tr("Could not reach PlasmaStream. Your destinations "
-					       "here are unchanged."),
-				  true);
-			return;
-		}
-
-		const QJsonDocument document = QJsonDocument::fromJson(reply->readAll());
-
-		if (!document.isObject()) {
-			setNotice(tr("PlasmaStream sent something unexpected. Nothing changed."),
-				  true);
-			return;
-		}
-
-		const QJsonArray incoming = document.object().value("destinations").toArray();
-		int added = 0;
-		int updated = 0;
-
-		for (const QJsonValue &value : incoming) {
-			const QJsonObject object = value.toObject();
-			const std::string id = object.value("id").toString().toStdString();
-
-			if (id.empty()) {
-				continue;
-			}
-
-			Destination *existing = nullptr;
-
-			for (Destination &candidate : config().destinations) {
-				if (candidate.id == id) {
-					existing = &candidate;
-					break;
+		// Back to the Qt thread. Everything below touches widgets, and Qt
+		// permits that from exactly one thread.
+		QMetaObject::invokeMethod(
+			qApp,
+			[alive, response]() {
+				if (!alive) {
+					return;
 				}
-			}
 
-			if (existing) {
-				// The key is pointedly not touched. It is the one field the
-				// server does not have, and overwriting it with nothing is
-				// how a sync silently breaks a working setup.
-				existing->name = object.value("name").toString().toStdString();
-				existing->platform =
-					object.value("platform").toString().toStdString();
-				existing->url = object.value("ingestUrl").toString().toStdString();
-				updated++;
-				continue;
-			}
-
-			Destination destination;
-			destination.id = id;
-			destination.name = object.value("name").toString().toStdString();
-			destination.platform = object.value("platform").toString().toStdString();
-			destination.url = object.value("ingestUrl").toString().toStdString();
-			config().destinations.push_back(destination);
-			added++;
-		}
-
-		save_config();
-		rebuildTable();
-		updateButtons();
-
-		if (added > 0) {
-			setNotice(tr("Added %1 and updated %2. The new ones need their stream "
-				     "keys before they will go anywhere.")
-					  .arg(added)
-					  .arg(updated),
-				  true);
-		} else {
-			setNotice(tr("Up to date. %1 destination(s) checked.").arg(updated), false);
-		}
-	});
+				alive->applyFetch(response);
+			},
+			Qt::QueuedConnection);
+	}).detach();
 }
+
+void MultistreamDock::applyFetch(const HttpResponse &response)
+{
+	fetch_->setEnabled(true);
+
+	if (response.status == 404) {
+		setNotice(tr("That plugin key was not recognised. Copy it again from your "
+			     "dashboard."),
+			  true);
+		return;
+	}
+
+	if (!response.ok()) {
+		// The reason is included rather than swallowed. The first version of
+		// this collapsed every non-404 into "could not reach PlasmaStream",
+		// which is true, unactionable, and hid the fact that the real problem
+		// was Qt having no TLS backend inside OBS.
+		const QString detail =
+			!response.error.empty()
+				? QString::fromStdString(response.error)
+				: tr("the server answered %1").arg(response.status);
+
+		setNotice(tr("Could not reach PlasmaStream (%1). Your destinations here are "
+			     "unchanged.")
+				  .arg(detail),
+			  true);
+		return;
+	}
+
+	QJsonParseError parse{};
+	const QJsonDocument document =
+		QJsonDocument::fromJson(QByteArray::fromStdString(response.body), &parse);
+
+	if (!document.isObject()) {
+		setNotice(tr("PlasmaStream sent something unexpected (%1). Nothing changed.")
+				  .arg(parse.errorString()),
+			  true);
+		return;
+	}
+
+	const QJsonArray incoming = document.object().value("destinations").toArray();
+	int added = 0;
+	int updated = 0;
+
+	for (const QJsonValue &value : incoming) {
+		const QJsonObject object = value.toObject();
+		const std::string id = object.value("id").toString().toStdString();
+
+		if (id.empty()) {
+			continue;
+		}
+
+		Destination *existing = nullptr;
+
+		for (Destination &candidate : config().destinations) {
+			if (candidate.id == id) {
+				existing = &candidate;
+				break;
+			}
+		}
+
+		if (existing) {
+			// The key is pointedly not touched. It is the one field the server
+			// does not have, and overwriting it with nothing is how a sync
+			// silently breaks a working setup.
+			existing->name = object.value("name").toString().toStdString();
+			existing->platform = object.value("platform").toString().toStdString();
+			existing->url = object.value("ingestUrl").toString().toStdString();
+			updated++;
+			continue;
+		}
+
+		Destination destination;
+		destination.id = id;
+		destination.name = object.value("name").toString().toStdString();
+		destination.platform = object.value("platform").toString().toStdString();
+		destination.url = object.value("ingestUrl").toString().toStdString();
+		config().destinations.push_back(destination);
+		added++;
+	}
+
+	save_config();
+	rebuildTable();
+	updateButtons();
+
+	if (added > 0) {
+		setNotice(tr("Added %1 and updated %2. The new ones need their stream keys "
+			     "before they will go anywhere.")
+				  .arg(added)
+				  .arg(updated),
+			  true);
+	} else if (updated > 0) {
+		setNotice(tr("Up to date. %1 destination(s) checked.").arg(updated), false);
+	} else {
+		setNotice(tr("Your PlasmaStream account has no destinations saved yet. Add them "
+			     "on the Multistream page, or just press Add here."),
+			  false);
+	}
+}
+
 
 void MultistreamDock::refreshStatuses()
 {
