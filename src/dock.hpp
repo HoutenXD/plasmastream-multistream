@@ -58,6 +58,7 @@ private slots:
 	void editSelected();
 	void removeSelected();
 	void fetchFromPlasmaStream();
+	void changeToken();
 	void refreshStatuses();
 
 private:
@@ -76,6 +77,7 @@ private:
 	QPushButton *edit_ = nullptr;
 	QPushButton *remove_ = nullptr;
 	QPushButton *fetch_ = nullptr;
+	QPushButton *keyButton_ = nullptr;
 	QLabel *notice_ = nullptr;
 	QTimer *poll_ = nullptr;
 };
