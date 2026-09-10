@@ -42,6 +42,16 @@ class MultistreamDock : public QWidget {
 public:
 	explicit MultistreamDock(QWidget *parent = nullptr);
 
+	/**
+	 * How large this wants to be before anybody drags it.
+	 *
+	 * A QDockWidget sizes itself from its child's hint, and a QTableWidget asks
+	 * for very little, so the dock opened at a width that truncated its own
+	 * column headers. This asks for enough to read a destination name and its
+	 * status side by side.
+	 */
+	QSize sizeHint() const override;
+
 private slots:
 	void addDestination();
 	void editSelected();
@@ -51,11 +61,14 @@ private slots:
 
 private:
 	void rebuildTable();
+	/** Show the table or the empty-state hint, never both. */
+	void updateEmptyState();
 	/** Enable or disable the buttons that need a selected row. */
 	void updateButtons();
 	void setNotice(const QString &text, bool warning);
 
 	QTableWidget *table_ = nullptr;
+	QLabel *empty_ = nullptr;
 	QPushButton *add_ = nullptr;
 	QPushButton *edit_ = nullptr;
 	QPushButton *remove_ = nullptr;
