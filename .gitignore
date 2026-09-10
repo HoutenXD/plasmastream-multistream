@@ -1,0 +1,7 @@
+# Downloaded by CMake during configure: OBS sources, obs-deps and Qt6, plus the
+# libobs build they produce. Hundreds of megabytes, entirely reproducible from
+# buildspec.json, and never committed.
+.deps/
+
+# Build trees, one per platform preset.
+build_*/
