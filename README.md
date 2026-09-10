@@ -43,12 +43,24 @@ cmake --build build_x64 --config RelWithDebInfo
 ```
 
 The result lands in `build_x64/rundir/RelWithDebInfo`. To install it for testing
-on Windows, copy it into your user plugin folder:
+on Windows, copy it into the plugin folder OBS actually scans:
 
 ```
-%APPDATA%\obs-studio\plugins\plasmastream-multistream\bin\64bit\plasmastream-multistream.dll
-%APPDATA%\obs-studio\plugins\plasmastream-multistream\data\locale\en-US.ini
+%PROGRAMDATA%\obs-studio\plugins\plasmastream-multistream\bin\64bit\plasmastream-multistream.dll
+%PROGRAMDATA%\obs-studio\plugins\plasmastream-multistream\data\locale\en-US.ini
 ```
+
+**PROGRAMDATA, not APPDATA.** Every other platform puts user plugins in the user
+config directory and Windows does not: `AddExtraModulePaths` in
+`frontend/widgets/OBSBasic.cpp` calls `GetAppConfigPath` on macOS and Linux, and
+`GetProgramDataPath` on Windows.
+
+Getting it wrong produces no error of any kind. OBS never scans the directory, so
+the log holds no failure and no mention of the plugin at all, which reads exactly
+like a broken binary.
+
+The folder name has to match the DLL name, because libobs substitutes it into
+`plugins/%module%/bin/64bit` as it scans.
 
 OBS loads plugins at startup, so restart it after copying.
 
