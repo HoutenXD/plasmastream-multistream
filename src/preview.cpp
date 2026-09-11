@@ -429,13 +429,14 @@ void Preview::resizeEvent(QResizeEvent *event)
 /* Runs on the graphics thread, not Qt's. Touch nothing here that is not libobs. */
 void Preview::render(void *data, uint32_t cx, uint32_t cy)
 {
-	auto *preview = static_cast<Preview *>(data);
-
 	uint32_t sourceW = 0;
 	uint32_t sourceH = 0;
-	obs_canvas_t *canvas = nullptr;
+	bool drawn = false;
 
 #if PLASMASTREAM_HAS_CANVAS
+	auto *preview = static_cast<Preview *>(data);
+	obs_canvas_t *canvas = nullptr;
+
 	if (preview->source_ == Source::Canvas && preview->canvas_) {
 		canvas = obs_weak_canvas_get_canvas(preview->canvas_);
 
@@ -448,11 +449,16 @@ void Preview::render(void *data, uint32_t cx, uint32_t cy)
 		if (obs_canvas_get_video_info(canvas, &ovi)) {
 			sourceW = ovi.base_width;
 			sourceH = ovi.base_height;
+			drawn = true;
 		}
 	}
+#else
+	/* Nothing reads it on this path, and an unused parameter is an error under
+	 * the CI presets. */
+	(void)data;
 #endif
 
-	if (!canvas) {
+	if (!drawn) {
 		obs_video_info ovi = {};
 
 		if (obs_get_video_info(&ovi)) {
@@ -490,6 +496,7 @@ void Preview::render(void *data, uint32_t cx, uint32_t cy)
 	{
 		obs_render_main_texture();
 	}
+
 
 #if PLASMASTREAM_HAS_CANVAS
 	if (preview->editable_ && !preview->selected_.empty()) {
