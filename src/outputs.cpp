@@ -52,12 +52,14 @@ struct RunningOutput {
 	int bitrate_kbps = 0;
 	int reconnects = 0;
 
+#if PLASMASTREAM_HAS_CANVAS
 	/* Vertical destinations only: a second canvas holding one item, the
 	 * program scene, cropped into portrait. Null on everything else. */
 	obs_canvas_t *canvas = nullptr;
 	obs_scene_t *scene = nullptr;
 	obs_sceneitem_t *item = nullptr;
 	bool crop = true;
+#endif
 };
 
 /* unique_ptr, not by value: the signal handlers below hold a void* into these,
@@ -165,6 +167,7 @@ void release(RunningOutput &running)
 	running.video = nullptr;
 	running.audio = nullptr;
 
+#if PLASMASTREAM_HAS_CANVAS
 	if (running.item) {
 		obs_sceneitem_remove(running.item);
 		obs_sceneitem_release(running.item);
@@ -180,7 +183,10 @@ void release(RunningOutput &running)
 		running.canvas = nullptr;
 		running.scene = nullptr;
 	}
+#endif
 }
+
+#if PLASMASTREAM_HAS_CANVAS
 
 /* Point a vertical canvas's one scene item at whatever is on program now, and
  * size it to the portrait frame.
@@ -288,6 +294,22 @@ bool make_vertical(RunningOutput &running, const Destination &destination)
 
 	return true;
 }
+
+#else
+
+/* Without the canvas API there is nothing to build, and saying so once here
+ * keeps every call site below free of conditionals. */
+bool make_vertical(RunningOutput &running, const Destination &)
+{
+	blog(LOG_WARNING,
+	     "[plasmastream] '%s' asks for a vertical frame, but this build has no canvas support "
+	     "(built against libobs %d.%d, which is older than 31.1)",
+	     running.name.c_str(), LIBOBS_API_MAJOR_VER, LIBOBS_API_MINOR_VER);
+
+	return false;
+}
+
+#endif
 
 /* What the main stream encodes with, so a per-destination encoder defaults to
  * the same kind rather than to x264 on a machine set up for NVENC. */
@@ -399,8 +421,12 @@ bool attach_encoders(RunningOutput &running, const Destination &destination,
 	/* A vertical destination reads its own canvas; everything else reads the
 	 * same one the main stream does and differs only in compression. Audio is
 	 * the main mix either way, since the vertical canvas does not make any. */
+#if PLASMASTREAM_HAS_CANVAS
 	obs_encoder_set_video(running.video, running.canvas ? obs_canvas_get_video(running.canvas)
 							    : obs_get_video());
+#else
+	obs_encoder_set_video(running.video, obs_get_video());
+#endif
 	obs_encoder_set_audio(running.audio, obs_get_audio());
 
 	return true;
@@ -625,6 +651,7 @@ void stop_outputs()
 
 void program_scene_changed()
 {
+#if PLASMASTREAM_HAS_CANVAS
 	std::lock_guard<std::mutex> lock(g_mutex);
 
 	for (const std::unique_ptr<RunningOutput> &running : g_running) {
@@ -632,6 +659,7 @@ void program_scene_changed()
 			frame_program(*running);
 		}
 	}
+#endif
 }
 
 std::vector<OutputStatus> output_statuses()

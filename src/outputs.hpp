@@ -21,6 +21,22 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <string>
 #include <vector>
 
+#include <obs-config.h>
+
+/* Vertical needs obs_canvas_*, which arrived in libobs 31.1.
+ *
+ * This is not a courtesy to people on old OBS: on Linux a plugin has to be
+ * built against the libobs the user actually runs, and Ubuntu 24.04 still ships
+ * 30.0.2. Building against anything newer there produces a .deb that cannot
+ * load. So the canvas compiles out rather than the Linux build not existing.
+ *
+ * Overridable so the other branch can be compiled on a machine that only has
+ * the newer headers, which is the only way to find out it still builds. */
+#ifndef PLASMASTREAM_HAS_CANVAS
+#define PLASMASTREAM_HAS_CANVAS \
+	(LIBOBS_API_MAJOR_VER > 31 || (LIBOBS_API_MAJOR_VER == 31 && LIBOBS_API_MINOR_VER >= 1))
+#endif
+
 namespace plasmastream {
 
 enum class OutputState {
@@ -68,8 +84,16 @@ void stop_one(const std::string &id);
 bool streaming_live();
 
 /* Re-aims every vertical canvas at whatever is on program now. Call from the
- * frontend scene-changed event; destinations that are not vertical ignore it. */
+ * frontend scene-changed event; destinations that are not vertical ignore it.
+ * A no-op where the canvas API is missing. */
 void program_scene_changed();
+
+/* Whether this build can do vertical at all, for the dock to say so rather than
+ * offering a tick box that quietly does nothing. */
+constexpr bool vertical_supported()
+{
+	return PLASMASTREAM_HAS_CANVAS;
+}
 
 /* A copy, so the dock cannot release something the streaming thread is using. */
 std::vector<OutputStatus> output_statuses();

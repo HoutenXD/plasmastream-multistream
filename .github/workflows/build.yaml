@@ -95,16 +95,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Linux has no buildspec entry: it builds against a libobs it finds on the
-      # system rather than a downloaded one, which is why the .deb only suits the
-      # OBS it was compiled against.
+      # Linux has no buildspec entry: a plugin must link against the libobs the
+      # user actually runs, so this builds against the distribution's.
       #
-      # Ubuntu 24.04's own libobs-dev is OBS 30, which predates obs_canvas_* and
-      # so cannot build the vertical canvas at all. OBS's PPA carries a current
-      # build for noble, and using it means the .deb wants OBS from that PPA too.
+      # On 24.04 that is OBS 30.0.2, which predates obs_canvas_*, so this build
+      # comes out without vertical. That is the correct trade rather than a
+      # shortfall: building against anything newer would produce a .deb that no
+      # Ubuntu user could load. See PLASMASTREAM_HAS_CANVAS in outputs.hpp.
+      #
+      # The OBS PPA does not help. It publishes obs-studio and no libobs-dev, so
+      # apt still resolves the headers from the Ubuntu archive.
       - name: Dependencies
         run: |
-          sudo add-apt-repository --yes ppa:obsproject/obs-studio
           sudo apt-get update
           sudo apt-get install --yes \
             cmake ninja-build pkg-config \
