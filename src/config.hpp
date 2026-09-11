@@ -32,6 +32,25 @@ struct Destination {
 	std::string key;
 	bool enabled = true;
 
+	/* Off means share the main stream's encoder, which costs no CPU but sends
+	 * everyone the same bitrate. On makes a second encoder for this
+	 * destination: the fix for an upload that cannot carry two full streams. */
+	bool own_encoder = false;
+	/* kbps. Only read when own_encoder is set. */
+	int video_bitrate = 2500;
+	int audio_bitrate = 160;
+	/* Empty means whatever OBS is already using for the main stream. */
+	std::string encoder_id;
+
+	/* Renders the program a second time into a 9:16 frame, for the platforms
+	 * that only take portrait. It has to encode separately whatever else is set,
+	 * because the main stream's encoder is tied to the main canvas. */
+	bool vertical = false;
+	int vertical_width = 1080;
+	int vertical_height = 1920;
+	/* Fill the frame and lose the sides, or fit the whole thing between bars. */
+	bool vertical_crop = true;
+
 	bool usable() const { return enabled && !url.empty() && !key.empty(); }
 };
 
@@ -40,6 +59,10 @@ struct Config {
 	/* PlasmaStream account token. Optional: the plugin works without one. */
 	std::string token;
 	bool sync_on_launch = true;
+
+	/* Applied to every output. OBS's own default is 20 retries, 10s apart. */
+	int reconnect_retries = 20;
+	int reconnect_delay_sec = 5;
 };
 
 Config &config();
