@@ -68,6 +68,29 @@ OBS loads plugins at startup, so restart it after copying.
 the older API means the plugin also loads on OBS 31, and nothing here uses
 anything added since.
 
+## Where this is published
+
+https://github.com/HoutenXD/plasmastream-multistream
+
+Development happens in the private PlasmaStream monorepo under
+`plugin/obs-multistream`, and that directory is exported to the public repo with
+`git subtree`. The public repo is the export, not the working copy: commits made
+there directly will be overwritten by the next export.
+
+**Re-export before releasing any binary, not after.** The GPL entitles whoever
+receives a build to the source *that build came from*, so a public repo one
+commit behind a published binary is a licence problem rather than an untidiness.
+Run this from the monorepo root:
+
+```
+git subtree split --prefix=plugin/obs-multistream -b plugin-public --rejoin
+git push https://github.com/HoutenXD/plasmastream-multistream.git plugin-public:main
+```
+
+Nothing else from the monorepo travels with it: `subtree split` rebuilds a
+history containing only commits that touched this directory, and only the files
+inside it.
+
 ## Licence
 
 GPL-2.0-or-later, and not by choice: this links against libobs, which is GPL-2.0,
