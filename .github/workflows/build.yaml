@@ -111,7 +111,7 @@ jobs:
           sudo apt-get install --yes \
             cmake ninja-build pkg-config \
             libobs-dev libcurl4-openssl-dev \
-            qt6-base-dev qt6-base-private-dev
+            qt6-base-dev qt6-base-private-dev libqt6svg6-dev
 
       - name: Configure
         run: cmake --preset ubuntu-ci-x86_64
