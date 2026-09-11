@@ -13,9 +13,46 @@ using and points extra RTMP outputs at it. That is what makes a second
 destination cheap: the frames are compressed once, so the extra cost is upload
 bandwidth rather than CPU.
 
-The trade is that every destination gets identical settings. That is the right
-default, and it is why the outputs start and stop with your main stream rather
-than having controls of their own.
+Borrowing means identical settings, which is the right default and not always
+the right answer. Each destination can instead be given its own encoder, with
+its own bitrate and its own choice of encoder from whatever the machine has.
+That costs CPU, and it buys the thing people actually run into: an upload that
+cannot carry two copies of a 6000 kbps stream, but can carry one of those and
+one at 2500.
+
+### Vertical
+
+A destination can be sent a 9:16 frame instead. The plugin renders whatever is
+on program a second time into a portrait canvas, either filling it and losing
+the sides or fitting it whole between bars, and follows you as you change
+scenes. Nothing about your scenes changes, and the main stream is untouched.
+
+Vertical always encodes separately: the main stream's encoder is tied to the
+main canvas and cannot be told to produce a different picture.
+
+### While you are live
+
+The tick box beside each destination works mid-stream. Turning one off stops
+that destination and leaves everything else running, which is what you want at
+the moment a platform starts rejecting frames and you would rather not end the
+broadcast to deal with it. Turning it back on starts it again.
+
+The dock shows, per destination, the bitrate actually going out, how long it has
+been connected, how many frames it has dropped, and how many times it has
+reconnected. The bitrate is measured from bytes sent, not read back from the
+setting, because the gap between the two is the whole question when something
+starts dropping.
+
+### Twitch Enhanced Broadcasting
+
+If your main stream is using it, OBS is producing a ladder of several encodings
+rather than one. A destination set to share picks the largest of them, which is
+the picture you think you are sending; taking whichever encoder happens to be
+first would quietly relay Twitch's lowest rung to your other platform.
+
+Twitch's own dual-format vertical output is part of that ladder and belongs to
+OBS. This plugin does not touch it. If you want a portrait feed somewhere else,
+that is what a vertical destination above is for.
 
 ## Your stream keys stay on your computer
 
@@ -42,6 +79,14 @@ cmake --preset windows-x64
 cmake --build build_x64 --config RelWithDebInfo
 ```
 
+macOS and Linux use their own presets, `macos` and `ubuntu-x86_64`. Linux builds
+against the distribution's libobs rather than a downloaded one, so it needs
+`libobs-dev`, `libcurl4-openssl-dev` and `qt6-base-dev` first, and the `.deb` it
+produces is only good for the release it was built on.
+
+CI builds all three on every push and attaches them to a draft release on a
+version tag. See `.github/workflows/build.yaml`.
+
 The result lands in `build_x64/rundir/RelWithDebInfo`. To install it for testing
 on Windows, copy it into the plugin folder OBS actually scans:
 
@@ -64,9 +109,12 @@ The folder name has to match the DLL name, because libobs substitutes it into
 
 OBS loads plugins at startup, so restart it after copying.
 
-`buildspec.json` pins OBS 31.1.1 rather than the newest release. Building against
-the older API means the plugin also loads on OBS 31, and nothing here uses
-anything added since.
+`buildspec.json` pins OBS 31.1.1 rather than the newest release, so the plugin
+loads on more than just the current one.
+
+**31.1 is the floor, not 31.0.** The vertical canvas uses `obs_canvas_*`, which
+arrived in 31.1, and those are ordinary imports: on an older OBS the module fails
+to load outright rather than loading without that one feature.
 
 ## Where this is published
 
@@ -79,7 +127,7 @@ there directly will be overwritten by the next export.
 
 **Re-export before releasing any binary, not after.** The GPL entitles whoever
 receives a build to the source *that build came from*, so a public repo one
-commit behind a published binary is a licence problem rather than an untidiness.
+commit behind a published binary is a license problem rather than an untidiness.
 Run this from the monorepo root:
 
 ```
@@ -91,7 +139,7 @@ Nothing else from the monorepo travels with it: `subtree split` rebuilds a
 history containing only commits that touched this directory, and only the files
 inside it.
 
-## Licence
+## License
 
 GPL-2.0-or-later, and not by choice: this links against libobs, which is GPL-2.0,
 so the plugin is a derivative work and has to be. Anyone who receives a binary is
