@@ -22,13 +22,43 @@ one at 2500.
 
 ### Vertical
 
-A destination can be sent a 9:16 frame instead. The plugin renders whatever is
-on program a second time into a portrait canvas, either filling it and losing
-the sides or fitting it whole between bars, and follows you as you change
-scenes. Nothing about your scenes changes, and the main stream is untouched.
+A destination can be sent a 9:16 frame instead. There is one vertical canvas,
+shared by every destination pointed at it, and it exists whenever the plugin is
+loaded rather than only while you are live, because a frame you cannot arrange
+until you are broadcasting is not one you can arrange.
+
+What goes on it is your wide program, placed as a block. Not necessarily
+cropped: the block can be the whole frame, or a band across the top, middle or
+bottom with the rest free for other things. That choice is remembered **per
+program scene**, because a full-bleed crop suits gameplay and ruins a talking
+head, and nobody wants to redo it every time they switch.
+
+Around that block you can put your own sources. Your camera and your chat
+overlay are already in your scene collection; adding them here borrows them onto
+the tall frame so they can sit where a phone wants them instead of where a
+monitor does. They stay exactly where they are in your wide scenes. A source is
+held active while it is on the vertical frame, so a camera that appears in none
+of your wide scenes still lights up for this one.
+
+Everything on the frame can be dragged: click to select, drag to move, pull a
+corner to resize. Transform and Properties open OBS's own dialogs rather than
+copies of them.
 
 Vertical always encodes separately: the main stream's encoder is tied to the
 main canvas and cannot be told to produce a different picture.
+
+### The Canvases dock
+
+A second dock showing the wide frame and the tall one side by side, both live.
+Its own dock rather than a tab, so it can go on a second monitor, and so
+destination health does not disappear behind a tab at the moment you want it.
+
+The vertical pane is the taller of the two on purpose. OBS already shows your
+wide frame in its own preview; the vertical one is the reason to open this.
+
+Both docks start hidden, as every OBS dock does. Tick them in the **Docks** menu
+in the menu bar, which is its own top-level menu next to View rather than
+something inside View.
 
 ### While you are live
 
@@ -53,6 +83,15 @@ first would quietly relay Twitch's lowest rung to your other platform.
 Twitch's own dual-format vertical output is part of that ladder and belongs to
 OBS. This plugin does not touch it. If you want a portrait feed somewhere else,
 that is what a vertical destination above is for.
+
+### What this is not
+
+The vertical frame holds your wide program as one picture, plus your own sources
+over it. It does not have its own scene list, and a source inside your program
+cannot be pulled out of it and rearranged on its own, because on this canvas the
+whole wide composition is a single element.
+
+If that is what you need, Aitum Vertical does it and is free.
 
 ## Your stream keys stay on your computer
 
@@ -123,6 +162,11 @@ The folder name has to match the DLL name, because libobs substitutes it into
 `plugins/%module%/bin/64bit` as it scans.
 
 OBS loads plugins at startup, so restart it after copying.
+
+The dock is off until you ask for it: tick PlasmaStream Multistream in the
+**Docks** menu. That is its own top-level menu in the menu bar (`menuDocks` in
+`frontend/forms/OBSBasic.ui`, added to the menubar beside File and Edit), not an
+entry inside View, which is where everyone looks first.
 
 `buildspec.json` pins OBS 31.1.1 rather than the newest release, so the plugin
 loads on more than just the current one.

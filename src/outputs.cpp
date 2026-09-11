@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "outputs.hpp"
 
 #include "config.hpp"
+#include "vertical.hpp"
 
 #include <memory>
 #include <mutex>
@@ -52,14 +53,10 @@ struct RunningOutput {
 	int bitrate_kbps = 0;
 	int reconnects = 0;
 
-#if PLASMASTREAM_HAS_CANVAS
-	/* Vertical destinations only: a second canvas holding one item, the
-	 * program scene, cropped into portrait. Null on everything else. */
-	obs_canvas_t *canvas = nullptr;
-	obs_scene_t *scene = nullptr;
-	obs_sceneitem_t *item = nullptr;
-	bool crop = true;
-#endif
+	/* Whether this one encodes from the vertical canvas. The canvas itself
+	 * belongs to vertical.cpp, since one of it serves every destination that
+	 * wants it. */
+	bool vertical = false;
 };
 
 /* unique_ptr, not by value: the signal handlers below hold a void* into these,
@@ -166,150 +163,7 @@ void release(RunningOutput &running)
 
 	running.video = nullptr;
 	running.audio = nullptr;
-
-#if PLASMASTREAM_HAS_CANVAS
-	if (running.item) {
-		obs_sceneitem_remove(running.item);
-		obs_sceneitem_release(running.item);
-		running.item = nullptr;
-	}
-
-	if (running.canvas) {
-		/* remove then release: remove tells anything holding a weak reference
-		 * that the canvas is gone, release drops ours. The scene belongs to
-		 * the canvas and goes with it. */
-		obs_canvas_remove(running.canvas);
-		obs_canvas_release(running.canvas);
-		running.canvas = nullptr;
-		running.scene = nullptr;
-	}
-#endif
 }
-
-#if PLASMASTREAM_HAS_CANVAS
-
-/* Point a vertical canvas's one scene item at whatever is on program now, and
- * size it to the portrait frame.
- *
- * A scene item's source cannot be swapped, so a scene change means dropping the
- * item and adding another. Cheap: it is one item holding a reference, not a
- * re-render of anything. */
-void frame_program(RunningOutput &running)
-{
-	if (!running.scene) {
-		return;
-	}
-
-	obs_source_t *program = obs_frontend_get_current_scene();
-
-	if (!program) {
-		return;
-	}
-
-	if (running.item) {
-		obs_sceneitem_remove(running.item);
-		obs_sceneitem_release(running.item);
-		running.item = nullptr;
-	}
-
-	obs_sceneitem_t *item = obs_scene_add(running.scene, program);
-	obs_source_release(program);
-
-	if (!item) {
-		return;
-	}
-
-	/* obs_scene_add hands back the scene's own reference rather than a new one,
-	 * so keeping it past this function means taking one. */
-	obs_sceneitem_addref(item);
-	running.item = item;
-
-	obs_video_info ovi = {};
-
-	if (!obs_canvas_get_video_info(running.canvas, &ovi)) {
-		return;
-	}
-
-	const float width = static_cast<float>(ovi.base_width);
-	const float height = static_cast<float>(ovi.base_height);
-
-	vec2 bounds;
-	vec2_set(&bounds, width, height);
-
-	/* OUTER fills the frame and loses the sides, which is what a 16:9 program
-	 * has to do to look like it belongs on a phone. INNER keeps all of it and
-	 * pays for that with bars. */
-	obs_sceneitem_set_bounds_type(item, running.crop ? OBS_BOUNDS_SCALE_OUTER
-							 : OBS_BOUNDS_SCALE_INNER);
-	obs_sceneitem_set_bounds(item, &bounds);
-	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
-	obs_sceneitem_set_alignment(item, OBS_ALIGN_CENTER);
-
-	vec2 center;
-	vec2_set(&center, width / 2.0f, height / 2.0f);
-	obs_sceneitem_set_pos(item, &center);
-}
-
-/* Build the portrait canvas. Everything else about the destination is the same;
- * only which video mix its encoder reads changes. */
-bool make_vertical(RunningOutput &running, const Destination &destination)
-{
-	obs_video_info ovi = {};
-
-	if (!obs_get_video_info(&ovi)) {
-		blog(LOG_WARNING, "[plasmastream] no video info, so no vertical frame for '%s'",
-		     running.name.c_str());
-		return false;
-	}
-
-	ovi.base_width = ovi.output_width = static_cast<uint32_t>(destination.vertical_width);
-	ovi.base_height = ovi.output_height = static_cast<uint32_t>(destination.vertical_height);
-
-	/* SCENE_REF and nothing else. ACTIVATE would activate every source a second
-	 * time, and a capture device that does not like being opened twice would
-	 * pick the middle of a stream to say so. The program scene is already
-	 * active for the main canvas; this one only renders it again. MIX_AUDIO is
-	 * off for the same kind of reason: audio comes from the main mix once. */
-	running.canvas = obs_canvas_create_private("PlasmaStream vertical", &ovi, SCENE_REF);
-
-	if (!running.canvas) {
-		blog(LOG_WARNING, "[plasmastream] could not create a vertical canvas for '%s'",
-		     running.name.c_str());
-		return false;
-	}
-
-	running.scene = obs_canvas_scene_create(running.canvas, "PlasmaStream vertical");
-
-	if (!running.scene) {
-		obs_canvas_remove(running.canvas);
-		obs_canvas_release(running.canvas);
-		running.canvas = nullptr;
-		return false;
-	}
-
-	running.crop = destination.vertical_crop;
-	frame_program(running);
-
-	obs_canvas_set_channel(running.canvas, 0, obs_scene_get_source(running.scene));
-
-	return true;
-}
-
-#else
-
-/* Without the canvas API there is nothing to build, and saying so once here
- * keeps every call site below free of conditionals. */
-bool make_vertical(RunningOutput &running, const Destination &)
-{
-	blog(LOG_WARNING,
-	     "[plasmastream] '%s' asks for a vertical frame, but this build has no canvas support "
-	     "(built against libobs %d.%d, which is older than 31.1)",
-	     running.name.c_str(), LIBOBS_API_MAJOR_VER, LIBOBS_API_MINOR_VER);
-
-	return false;
-}
-
-#endif
 
 /* What the main stream encodes with, so a per-destination encoder defaults to
  * the same kind rather than to x264 on a machine set up for NVENC. */
@@ -418,15 +272,27 @@ bool attach_encoders(RunningOutput &running, const Destination &destination,
 
 	running.owns_encoders = true;
 
-	/* A vertical destination reads its own canvas; everything else reads the
-	 * same one the main stream does and differs only in compression. Audio is
-	 * the main mix either way, since the vertical canvas does not make any. */
+	/* A vertical destination reads the vertical canvas; everything else reads
+	 * the same mix the main stream does and differs only in compression. Audio
+	 * is the main mix either way, since the vertical canvas makes none. */
+	video_t *mix = obs_get_video();
+
 #if PLASMASTREAM_HAS_CANVAS
-	obs_encoder_set_video(running.video, running.canvas ? obs_canvas_get_video(running.canvas)
-							    : obs_get_video());
-#else
-	obs_encoder_set_video(running.video, obs_get_video());
+	if (running.vertical) {
+		obs_canvas_t *canvas = vertical_canvas();
+
+		if (!canvas) {
+			blog(LOG_WARNING,
+			     "[plasmastream] '%s' wants a vertical frame and there is no canvas",
+			     running.name.c_str());
+			return false;
+		}
+
+		mix = obs_canvas_get_video(canvas);
+	}
 #endif
+
+	obs_encoder_set_video(running.video, mix);
 	obs_encoder_set_audio(running.audio, obs_get_audio());
 
 	return true;
@@ -469,12 +335,7 @@ RunningOutput *spin_up(const Destination &destination, obs_output_t *main_output
 		return nullptr;
 	}
 
-	/* Before the encoders, which need a mix to read. */
-	if (destination.vertical && !make_vertical(*running, destination)) {
-		obs_output_release(running->output);
-		obs_service_release(running->service);
-		return nullptr;
-	}
+	running->vertical = destination.vertical;
 
 	if (!attach_encoders(*running, destination, main_output, shared_video, shared_audio)) {
 		release(*running);
@@ -647,19 +508,6 @@ void stop_outputs()
 	for (std::unique_ptr<RunningOutput> &running : to_stop) {
 		release(*running);
 	}
-}
-
-void program_scene_changed()
-{
-#if PLASMASTREAM_HAS_CANVAS
-	std::lock_guard<std::mutex> lock(g_mutex);
-
-	for (const std::unique_ptr<RunningOutput> &running : g_running) {
-		if (running->canvas) {
-			frame_program(*running);
-		}
-	}
-#endif
 }
 
 std::vector<OutputStatus> output_statuses()

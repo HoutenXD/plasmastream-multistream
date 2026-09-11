@@ -24,8 +24,12 @@ if(ENABLE_FRONTEND_API)
 endif()
 
 if(ENABLE_QT)
-  find_package(Qt6 COMPONENTS Widgets Core)
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets)
+  # Svg as well, for the platform marks. OBS ships Qt6Svg.dll and the svg image
+  # format plugin beside its own binary, so this adds nothing to what a user
+  # already has, and it means the logos in the dock are the same paths the
+  # website draws rather than an approximation of them.
+  find_package(Qt6 COMPONENTS Widgets Core Svg)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
   target_compile_options(
     ${CMAKE_PROJECT_NAME}
     PRIVATE $<$<C_COMPILER_ID:Clang,AppleClang>:-Wno-quoted-include-in-framework-header -Wno-comma>
@@ -45,6 +49,10 @@ target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE
     src/plugin-main.cpp
+    src/appearance.cpp
+    src/appearance.hpp
+    src/canvases.cpp
+    src/canvases.hpp
     src/config.cpp
     src/config.hpp
     src/dock.cpp
@@ -53,6 +61,20 @@ target_sources(
     src/http.hpp
     src/outputs.cpp
     src/outputs.hpp
+    src/preview.cpp
+    src/preview.hpp
+    src/vertical.cpp
+    src/vertical.hpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
+
+# A dev tool, off unless asked for. See tools/dock-preview/main.cpp for why it
+# exists: the dock is the one part of this plugin nobody can review by reading.
+option(BUILD_DOCK_PREVIEW "Build the offscreen dock renderer" OFF)
+
+if(BUILD_DOCK_PREVIEW AND ENABLE_QT)
+  add_executable(dock-preview tools/dock-preview/main.cpp src/appearance.cpp src/appearance.hpp)
+  target_link_libraries(dock-preview PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Svg)
+  set_target_properties(dock-preview PROPERTIES AUTOMOC ON)
+endif()

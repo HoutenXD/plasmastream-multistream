@@ -17,7 +17,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "config.hpp"
+#include "canvases.hpp"
 #include "dock.hpp"
+#include "vertical.hpp"
 #include "http.hpp"
 #include "outputs.hpp"
 
@@ -48,10 +50,20 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 		plasmastream::stop_outputs();
 		break;
 
-	/* A vertical destination renders whatever is on program, so it has to be
-	 * told when that changes. Nothing else cares. */
+	/* The vertical frame renders whatever is on program, so it has to be told
+	 * when that changes. A no-op when there is no vertical canvas. */
 	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
-		plasmastream::program_scene_changed();
+		plasmastream::vertical_follow_program();
+		break;
+
+	/* Sources put on the vertical frame are looked up by name, and none of
+	 * those names exist until the collection is loaded. The canvas can be built
+	 * before that happens, so this is where they actually arrive. A changed
+	 * collection is a different set of sources and needs the same treatment. */
+	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
+		plasmastream::vertical_follow_program();
+		plasmastream::vertical_reload_sources();
 		break;
 
 	default:
@@ -68,6 +80,7 @@ bool obs_module_load(void)
 
 	obs_frontend_add_event_callback(on_frontend_event, nullptr);
 	plasmastream::register_dock();
+	plasmastream::register_canvas_dock();
 
 	obs_log(LOG_INFO, "loaded (version %s), %zu destination(s) configured", PLUGIN_VERSION,
 		plasmastream::config().destinations.size());
@@ -82,6 +95,10 @@ void obs_module_unload(void)
 	plasmastream::stop_outputs();
 
 	obs_frontend_remove_event_callback(on_frontend_event, nullptr);
+
+	/* Before libobs tears the graphics subsystem down, since the canvas lives
+	 * in it. */
+	plasmastream::vertical_shutdown();
 
 	obs_log(LOG_INFO, "unloaded");
 }

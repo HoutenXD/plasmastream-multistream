@@ -50,4 +50,5 @@ if (Test-Path "$src\$name.pdb") {
 Copy-Item "$src\$name\locale\*.ini" "$dest\data\locale\" -Force
 
 Write-Host "Installed to $dest" -ForegroundColor Green
-Write-Host "Start OBS. The dock is under View then Docks, called PlasmaStream Multistream."
+Write-Host "Start OBS, then tick PlasmaStream Multistream in the Docks menu."
+Write-Host "Docks is its own menu in the menu bar, next to View, not inside it."
