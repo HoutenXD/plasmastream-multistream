@@ -52,7 +52,9 @@ jobs:
 
   macos:
     name: macOS Universal
-    runs-on: macos-14
+    # Not macos-14: it defaults to Xcode 15.4, and cmake/macos/compilerconfig.cmake
+    # refuses anything below the macOS 15.0 SDK, which means Xcode 16.
+    runs-on: macos-15
 
     steps:
       - uses: actions/checkout@v4
@@ -93,11 +95,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Linux has no buildspec entry: it builds against the distribution's own
-      # libobs rather than a downloaded one, which is also why the .deb is only
-      # good for the release it was built on.
+      # Linux has no buildspec entry: it builds against a libobs it finds on the
+      # system rather than a downloaded one, which is why the .deb only suits the
+      # OBS it was compiled against.
+      #
+      # Ubuntu 24.04's own libobs-dev is OBS 30, which predates obs_canvas_* and
+      # so cannot build the vertical canvas at all. OBS's PPA carries a current
+      # build for noble, and using it means the .deb wants OBS from that PPA too.
       - name: Dependencies
         run: |
+          sudo add-apt-repository --yes ppa:obsproject/obs-studio
           sudo apt-get update
           sudo apt-get install --yes \
             cmake ninja-build pkg-config \
