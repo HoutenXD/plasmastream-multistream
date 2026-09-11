@@ -36,15 +36,40 @@ struct OutputStatus {
 	OutputState state = OutputState::Idle;
 	/* Empty unless Failed. */
 	std::string detail;
+
+	/* Measured from bytes actually sent between polls, not from the configured
+	 * bitrate. The configured number is what was asked for, and the gap between
+	 * the two is the whole question when frames start dropping. */
+	int bitrate_kbps = 0;
+	int dropped_frames = 0;
+	int total_frames = 0;
+	int reconnects = 0;
+	int uptime_sec = 0;
+
+	double drop_percent() const
+	{
+		return total_frames > 0 ? (100.0 * dropped_frames) / total_frames : 0.0;
+	}
 };
 
-/* Call on OBS_FRONTEND_EVENT_STREAMING_STARTED, not before: the encoders these
- * borrow do not exist until the main stream is running. Sharing them is what
- * makes an extra destination cost upload and almost no CPU, at the price of
- * every destination getting identical settings. */
+/* Call on OBS_FRONTEND_EVENT_STREAMING_STARTED, not before: an output sharing
+ * the main encoder needs it to exist. */
 void start_outputs();
 
 void stop_outputs();
+
+/* Start or stop one destination mid-stream, so a platform that is failing can
+ * be dropped without ending the broadcast. */
+bool start_one(const std::string &id);
+void stop_one(const std::string &id);
+
+/* Whether the main stream is up, which decides whether start_one can do
+ * anything. */
+bool streaming_live();
+
+/* Re-aims every vertical canvas at whatever is on program now. Call from the
+ * frontend scene-changed event; destinations that are not vertical ignore it. */
+void program_scene_changed();
 
 /* A copy, so the dock cannot release something the streaming thread is using. */
 std::vector<OutputStatus> output_statuses();

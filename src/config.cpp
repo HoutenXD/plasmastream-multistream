@@ -37,6 +37,14 @@ obs_data_t *destination_to_data(const Destination &destination)
 	obs_data_set_string(data, "url", destination.url.c_str());
 	obs_data_set_string(data, "key", destination.key.c_str());
 	obs_data_set_bool(data, "enabled", destination.enabled);
+	obs_data_set_bool(data, "own_encoder", destination.own_encoder);
+	obs_data_set_int(data, "video_bitrate", destination.video_bitrate);
+	obs_data_set_int(data, "audio_bitrate", destination.audio_bitrate);
+	obs_data_set_string(data, "encoder_id", destination.encoder_id.c_str());
+	obs_data_set_bool(data, "vertical", destination.vertical);
+	obs_data_set_int(data, "vertical_width", destination.vertical_width);
+	obs_data_set_int(data, "vertical_height", destination.vertical_height);
+	obs_data_set_bool(data, "vertical_crop", destination.vertical_crop);
 	return data;
 }
 
@@ -53,6 +61,21 @@ Destination destination_from_data(obs_data_t *data)
 	 * were on. */
 	obs_data_set_default_bool(data, "enabled", true);
 	destination.enabled = obs_data_get_bool(data, "enabled");
+
+	obs_data_set_default_int(data, "video_bitrate", 2500);
+	obs_data_set_default_int(data, "audio_bitrate", 160);
+	obs_data_set_default_int(data, "vertical_width", 1080);
+	obs_data_set_default_int(data, "vertical_height", 1920);
+	obs_data_set_default_bool(data, "vertical_crop", true);
+
+	destination.own_encoder = obs_data_get_bool(data, "own_encoder");
+	destination.video_bitrate = static_cast<int>(obs_data_get_int(data, "video_bitrate"));
+	destination.audio_bitrate = static_cast<int>(obs_data_get_int(data, "audio_bitrate"));
+	destination.encoder_id = obs_data_get_string(data, "encoder_id");
+	destination.vertical = obs_data_get_bool(data, "vertical");
+	destination.vertical_width = static_cast<int>(obs_data_get_int(data, "vertical_width"));
+	destination.vertical_height = static_cast<int>(obs_data_get_int(data, "vertical_height"));
+	destination.vertical_crop = obs_data_get_bool(data, "vertical_crop");
 
 	return destination;
 }
@@ -97,6 +120,11 @@ void load_config()
 	obs_data_set_default_bool(data, "sync_on_launch", true);
 	g_config.sync_on_launch = obs_data_get_bool(data, "sync_on_launch");
 
+	obs_data_set_default_int(data, "reconnect_retries", 20);
+	obs_data_set_default_int(data, "reconnect_delay_sec", 5);
+	g_config.reconnect_retries = static_cast<int>(obs_data_get_int(data, "reconnect_retries"));
+	g_config.reconnect_delay_sec = static_cast<int>(obs_data_get_int(data, "reconnect_delay_sec"));
+
 	g_config.destinations.clear();
 
 	obs_data_array_t *array = obs_data_get_array(data, "destinations");
@@ -137,6 +165,8 @@ void save_config()
 	obs_data_t *data = obs_data_create();
 	obs_data_set_string(data, "token", g_config.token.c_str());
 	obs_data_set_bool(data, "sync_on_launch", g_config.sync_on_launch);
+	obs_data_set_int(data, "reconnect_retries", g_config.reconnect_retries);
+	obs_data_set_int(data, "reconnect_delay_sec", g_config.reconnect_delay_sec);
 
 	obs_data_array_t *array = obs_data_array_create();
 

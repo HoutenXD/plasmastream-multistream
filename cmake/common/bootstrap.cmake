@@ -43,6 +43,13 @@ endif()
 # Add common module directories to default search path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/common")
 
+# A local addition to the template. Every name and version below comes out of
+# this file, and a plain file(READ) is invisible to the build graph: bump the
+# version, rebuild, and you get a binary that still reports the old one. That
+# only surfaces in the OBS log of whoever downloaded it, which is the worst place
+# to learn a version number is lying.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/buildspec.json")
+
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/buildspec.json" buildspec)
 
 string(JSON _name GET ${buildspec} name)

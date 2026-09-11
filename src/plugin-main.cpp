@@ -48,6 +48,12 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 		plasmastream::stop_outputs();
 		break;
 
+	/* A vertical destination renders whatever is on program, so it has to be
+	 * told when that changes. Nothing else cares. */
+	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
+		plasmastream::program_scene_changed();
+		break;
+
 	default:
 		break;
 	}
