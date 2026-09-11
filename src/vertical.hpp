@@ -112,6 +112,10 @@ void vertical_shutdown();
 
 #else
 
+/* obs_sceneitem_t exists on every OBS; only the canvas does not. So this one
+ * keeps its real signature and simply never finds anything, which lets the dock
+ * call it without a guard at every site. */
+inline obs_sceneitem_t *vertical_source_item(const std::string &) { return nullptr; }
 inline bool vertical_add_source(const std::string &) { return false; }
 inline void vertical_remove_source(const std::string &) {}
 inline void vertical_capture_layout() {}
