@@ -1,0 +1,141 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # obs-deps and Qt are large and versioned by buildspec.json, so the key is
+      # that file: a dependency bump changes the hash and misses the cache, and
+      # nothing else does.
+      - uses: actions/cache@v4
+        with:
+          path: .deps
+          key: windows-deps-${{ hashFiles('buildspec.json') }}
+
+      - name: Configure
+        run: cmake --preset windows-ci-x64
+
+      - name: Build
+        run: cmake --build build_x64 --config RelWithDebInfo
+
+      # Straight into the layout OBS scans, so the zip extracts over
+      # %PROGRAMDATA%\obs-studio\plugins with nothing to rearrange.
+      - name: Package
+        run: |
+          cmake --install build_x64 --config RelWithDebInfo --prefix release
+          $v = (Get-Content buildspec.json | ConvertFrom-Json).version
+          Compress-Archive -Path release\* -DestinationPath "plasmastream-multistream-$v-windows-x64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plasmastream-multistream-windows-x64
+          path: plasmastream-multistream-*-windows-x64.zip
+
+  macos:
+    name: macOS Universal
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: .deps
+          key: macos-deps-${{ hashFiles('buildspec.json') }}
+
+      # Unsigned. Signing needs a paid Apple Developer certificate, and an
+      # unsigned build still installs after the right-click-Open dance. Set
+      # CODESIGN_IDENT and CODESIGN_TEAM as secrets if that ever changes.
+      - name: Configure
+        run: cmake --preset macos-ci
+
+      - name: Build
+        run: cmake --build --preset macos-ci
+
+      # The install step runs pkgbuild itself, so this produces a .pkg installer
+      # rather than a folder to drag somewhere. Unsigned, so the first open has
+      # to be right-click then Open.
+      - name: Package
+        run: |
+          cmake --install build_macos --config RelWithDebInfo --prefix release
+          v=$(python3 -c 'import json;print(json.load(open("buildspec.json"))["version"])')
+          mv release/plasmastream-multistream.pkg \
+             "release/plasmastream-multistream-$v-macos-universal.pkg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plasmastream-multistream-macos-universal
+          path: release/*.pkg
+
+  ubuntu:
+    name: Ubuntu x86_64
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Linux has no buildspec entry: it builds against the distribution's own
+      # libobs rather than a downloaded one, which is also why the .deb is only
+      # good for the release it was built on.
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            cmake ninja-build pkg-config \
+            libobs-dev libcurl4-openssl-dev \
+            qt6-base-dev qt6-base-private-dev
+
+      - name: Configure
+        run: cmake --preset ubuntu-ci-x86_64
+
+      - name: Build
+        run: cmake --build --preset ubuntu-ci-x86_64
+
+      - name: Package
+        working-directory: build_x86_64
+        run: cpack
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plasmastream-multistream-ubuntu-x86_64
+          path: release/*.deb
+
+  release:
+    name: Release
+    needs: [windows, macos, ubuntu]
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # Drafted rather than published: the GPL obliges us to ship source that
+      # matches the binary, and a draft leaves room to check that this tag is
+      # the commit the binaries came from before anybody can download them.
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: artifacts/*
+          generate_release_notes: true
