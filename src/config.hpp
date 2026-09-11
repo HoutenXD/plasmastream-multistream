@@ -122,6 +122,11 @@ struct Config {
 
 	/* Layered over the programme block, bottom of the list first. */
 	std::vector<VerticalSource> vertical_sources;
+
+	/* Whether the Canvases dock has ever been shown. OBS starts every dock
+	 * hidden and most people never find the Docks menu, so it gets opened once
+	 * and then never touched again. */
+	bool canvases_introduced = false;
 };
 
 /* The framing for a scene, or a default one covering the whole frame. Never

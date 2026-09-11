@@ -605,12 +605,32 @@ void register_canvas_dock()
 
 	obs_frontend_add_dock_by_id("plasmastream_canvases", "PlasmaStream Canvases", dock);
 
-	QTimer::singleShot(4000, dock, [dock]() {
+	if (config().canvases_introduced) {
+		return;
+	}
+
+	/* Shown once, the first time this plugin ever runs, because OBS starts every
+	 * dock hidden and the Docks menu is its own top-level menu that people look
+	 * for inside View. A panel nobody can find is a panel nobody has.
+	 *
+	 * Once only, and nothing else touched: no floating, no size, no position.
+	 * Whatever is done with it after this is remembered by OBS and never
+	 * overridden again.
+	 *
+	 * Deferred because OBS restores its saved dock layout after modules load,
+	 * and anything set before that is simply undone. */
+	QTimer::singleShot(3000, dock, [dock]() {
 		for (QWidget *w = dock->parentWidget(); w; w = w->parentWidget()) {
-			if (auto *d = qobject_cast<QDockWidget *>(w)) {
-				d->setFloating(true); d->resize(760, 640); d->move(120, 60);
-				d->setVisible(true); d->raise(); break;
+			auto *docked = qobject_cast<QDockWidget *>(w);
+
+			if (!docked) {
+				continue;
 			}
+
+			docked->setVisible(true);
+			config().canvases_introduced = true;
+			save_config();
+			break;
 		}
 	});
 }
