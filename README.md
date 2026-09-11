@@ -79,10 +79,19 @@ cmake --preset windows-x64
 cmake --build build_x64 --config RelWithDebInfo
 ```
 
-macOS and Linux use their own presets, `macos` and `ubuntu-x86_64`. Linux builds
-against the distribution's libobs rather than a downloaded one, so it needs
-`libobs-dev`, `libcurl4-openssl-dev` and `qt6-base-dev` first, and the `.deb` it
-produces is only good for the release it was built on.
+macOS and Linux use their own presets, `macos` and `ubuntu-x86_64`. macOS needs
+Xcode 16 or newer, because the OBS template refuses anything below the macOS
+15.0 SDK.
+
+Linux builds against a libobs it finds on the system rather than a downloaded
+one, so the `.deb` only suits the OBS it was compiled against. Ubuntu's own
+`libobs-dev` is OBS 30, which predates `obs_canvas_*` and cannot build the
+vertical canvas at all, so take libobs from the project's PPA:
+
+```
+sudo add-apt-repository ppa:obsproject/obs-studio
+sudo apt install libobs-dev libcurl4-openssl-dev qt6-base-dev qt6-base-private-dev ninja-build
+```
 
 CI builds all three on every push and attaches them to a draft release on a
 version tag. See `.github/workflows/build.yaml`.
