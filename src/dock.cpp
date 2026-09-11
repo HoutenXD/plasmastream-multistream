@@ -18,9 +18,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "dock.hpp"
 
+#include "appearance.hpp"
+
 #include "config.hpp"
 #include "http.hpp"
 #include "outputs.hpp"
+#include "vertical.hpp"
 
 #include <thread>
 #include <vector>
@@ -97,6 +100,30 @@ std::vector<const char *> available_encoders()
 	return ids;
 }
 
+/* Where this actually goes.
+ *
+ * "Something else" is the right label in the dropdown and the wrong one in a
+ * column headed Where, because it answers a question nobody asked. For anything
+ * custom the host is what the streamer recognizes: they typed it. */
+QString where_label(const Destination &destination);
+
+/* Seconds as something short enough to sit inline: 45s, 12m, 2h 04m. The full
+ * clock is in the tooltip, where there is room for it. */
+QString short_uptime(int seconds)
+{
+	if (seconds < 60) {
+		return QStringLiteral("%1s").arg(seconds);
+	}
+
+	if (seconds < 3600) {
+		return QStringLiteral("%1m").arg(seconds / 60);
+	}
+
+	return QStringLiteral("%1h %2m")
+		.arg(seconds / 3600)
+		.arg((seconds % 3600) / 60, 2, 10, QLatin1Char('0'));
+}
+
 QString platform_label(const std::string &key)
 {
 	for (const PlatformOption &option : PLATFORMS) {
@@ -106,6 +133,32 @@ QString platform_label(const std::string &key)
 	}
 
 	return QObject::tr("Something else");
+}
+
+QString where_label(const Destination &destination)
+{
+	for (const PlatformOption &option : PLATFORMS) {
+		if (destination.platform == option.key && destination.platform != "custom") {
+			return QString::fromUtf8(option.label);
+		}
+	}
+
+	/* Host only: the scheme is noise in a narrow column, and the path after it
+	 * is the same "/live2" on every row of a given platform. */
+	QString host = QString::fromStdString(destination.url);
+	const int scheme = host.indexOf(QLatin1String("://"));
+
+	if (scheme >= 0) {
+		host = host.mid(scheme + 3);
+	}
+
+	const int slash = host.indexOf(QLatin1Char('/'));
+
+	if (slash >= 0) {
+		host = host.left(slash);
+	}
+
+	return host.isEmpty() ? QObject::tr("Not set yet") : host;
 }
 
 /* Takes either a bare token or the whole URL the dashboard's copy button hands
@@ -211,23 +264,6 @@ bool edit_destination(QWidget *parent, Destination &destination, bool creating)
 				    "newer to use it."));
 	}
 
-	auto *verticalSize = new QComboBox(&dialog);
-	verticalSize->addItem(QObject::tr("1080 x 1920"), QSize(1080, 1920));
-	verticalSize->addItem(QObject::tr("720 x 1280"), QSize(720, 1280));
-	verticalSize->addItem(QObject::tr("1440 x 2560"), QSize(1440, 2560));
-
-	const int sizeIndex = verticalSize->findData(
-		QSize(destination.vertical_width, destination.vertical_height));
-
-	if (sizeIndex >= 0) {
-		verticalSize->setCurrentIndex(sizeIndex);
-	}
-
-	auto *verticalFit = new QComboBox(&dialog);
-	verticalFit->addItem(QObject::tr("Fill the frame, crop the sides"), true);
-	verticalFit->addItem(QObject::tr("Fit it all in, bars top and bottom"), false);
-	verticalFit->setCurrentIndex(destination.vertical_crop ? 0 : 1);
-
 	// Off by default because sharing costs nothing. On is for the case people
 	// actually hit: an upload that cannot carry two copies of the main stream.
 	auto *own = new QCheckBox(QObject::tr("Use its own bitrate for this destination"), &dialog);
@@ -271,8 +307,7 @@ bool edit_destination(QWidget *parent, Destination &destination, bool creating)
 	// Vertical has no choice about its own encoder: the main stream's is bound
 	// to the main canvas. Showing the box ticked and greyed says that, where a
 	// box that silently disagrees with what happens does not.
-	const auto syncEncoderRow = [own, vertical, verticalSize, verticalFit, videoBitrate,
-				     audioBitrate, encoder]() {
+	const auto syncEncoderRow = [own, vertical, videoBitrate, audioBitrate, encoder]() {
 		const bool portrait = vertical->isChecked();
 		const bool separate = portrait || own->isChecked();
 
@@ -282,8 +317,6 @@ bool edit_destination(QWidget *parent, Destination &destination, bool creating)
 			own->setChecked(true);
 		}
 
-		verticalSize->setEnabled(portrait);
-		verticalFit->setEnabled(portrait);
 		videoBitrate->setEnabled(separate);
 		audioBitrate->setEnabled(separate);
 		encoder->setEnabled(separate);
@@ -299,8 +332,6 @@ bool edit_destination(QWidget *parent, Destination &destination, bool creating)
 	form->addRow(QObject::tr("Server URL"), url);
 	form->addRow(QObject::tr("Stream key"), key);
 	form->addRow(QString(), vertical);
-	form->addRow(QObject::tr("Vertical size"), verticalSize);
-	form->addRow(QObject::tr("Vertical framing"), verticalFit);
 	form->addRow(QString(), own);
 	form->addRow(QObject::tr("Video bitrate"), videoBitrate);
 	form->addRow(QObject::tr("Audio bitrate"), audioBitrate);
@@ -336,11 +367,6 @@ bool edit_destination(QWidget *parent, Destination &destination, bool creating)
 	destination.audio_bitrate = audioBitrate->value();
 	destination.encoder_id = encoder->currentData().toString().toStdString();
 	destination.vertical = vertical->isChecked();
-	destination.vertical_crop = verticalFit->currentData().toBool();
-
-	const QSize portrait = verticalSize->currentData().toSize();
-	destination.vertical_width = portrait.width();
-	destination.vertical_height = portrait.height();
 
 	if (destination.name.empty()) {
 		destination.name = platform_label(destination.platform).toStdString();
@@ -359,9 +385,14 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 {
 	setObjectName(QStringLiteral("PlasmaStreamMultistreamDock"));
 
-	table_ = new QTableWidget(0, 5, this);
-	table_->setHorizontalHeaderLabels(
-		{tr("On"), tr("Destination"), tr("Where"), tr("Status"), tr("Health")});
+	table_ = new QTableWidget(0, 4, this);
+	table_->setHorizontalHeaderLabels({tr("On"), tr("Destination"), tr("Where"), tr("State")});
+
+	// Status and Health used to be separate, which meant a column that was empty
+	// until you went live and another that carried three unrelated meanings:
+	// configured, broken, and connected. One column that answers "what is this
+	// doing" is the thing somebody actually glances at mid-stream.
+	table_->setItemDelegate(new RowDelegate(table_));
 
 	// Every column needs a mode. Leave one out and it keeps Qt's 100px default,
 	// which in a narrow dock squeezes the columns that matter until their own
@@ -371,7 +402,6 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	header->setSectionResizeMode(1, QHeaderView::Stretch);
 	header->setSectionResizeMode(2, QHeaderView::ResizeToContents);
 	header->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-	header->setSectionResizeMode(4, QHeaderView::ResizeToContents);
 	header->setStretchLastSection(false);
 	header->setHighlightSections(false);
 
@@ -506,19 +536,18 @@ void MultistreamDock::rebuildTable()
 		});
 
 		table_->setCellWidget(row, 0, toggle);
-		table_->setItem(row, 1,
-				new QTableWidgetItem(QString::fromStdString(destination.name)));
-		const QString where = destination.vertical
-					      ? tr("%1, 9:16").arg(platform_label(destination.platform))
-					      : platform_label(destination.platform);
+		// The mark and the 9:16 chip are painted by the delegate, so the item
+		// carries what to draw rather than a name with things typed into it.
+		auto *name = new QTableWidgetItem(QString::fromStdString(destination.name));
+		name->setData(RowDelegate::PlatformRole,
+			      QString::fromStdString(destination.platform));
+		name->setData(RowDelegate::VerticalRole, destination.vertical);
+		table_->setItem(row, 1, name);
 
-		table_->setItem(row, 2, new QTableWidgetItem(where));
+		table_->setItem(row, 2, new QTableWidgetItem(where_label(destination)));
 
 		// Never show the key, not even masked: the length is itself a hint.
-		const QString status = destination.key.empty() ? tr("No stream key yet")
-							       : tr("Ready");
-		table_->setItem(row, 3, new QTableWidgetItem(status));
-		table_->setItem(row, 4, new QTableWidgetItem(QString()));
+		table_->setItem(row, 3, new QTableWidgetItem(QString()));
 	}
 }
 
@@ -631,6 +660,30 @@ void MultistreamDock::showOptions()
 				   &dialog);
 	sync->setChecked(config().sync_on_launch);
 
+	// There is one vertical canvas, shared by every destination pointed at it,
+	// so its shape is a setting here rather than a copy on each of them.
+	auto *verticalSize = new QComboBox(&dialog);
+	verticalSize->addItem(tr("1080 x 1920"), QSize(1080, 1920));
+	verticalSize->addItem(tr("720 x 1280"), QSize(720, 1280));
+	verticalSize->addItem(tr("1440 x 2560"), QSize(1440, 2560));
+
+	const int sizeIndex =
+		verticalSize->findData(QSize(config().vertical_width, config().vertical_height));
+
+	if (sizeIndex >= 0) {
+		verticalSize->setCurrentIndex(sizeIndex);
+	}
+
+	auto *verticalFit = new QComboBox(&dialog);
+	verticalFit->addItem(tr("Fill the frame, crop the sides"), true);
+	verticalFit->addItem(tr("Fit it all in, bars top and bottom"), false);
+	verticalFit->setCurrentIndex(config().vertical_crop ? 0 : 1);
+
+	if (!vertical_supported()) {
+		verticalSize->setEnabled(false);
+		verticalFit->setEnabled(false);
+	}
+
 	auto *note = new QLabel(
 		tr("Reconnect settings apply to the destinations this plugin sends to. Your main "
 		   "stream keeps whatever is set in OBS's own settings."),
@@ -641,6 +694,8 @@ void MultistreamDock::showOptions()
 	form->addRow(tr("Reconnect attempts"), retries);
 	form->addRow(tr("Wait between attempts"), delay);
 	form->addRow(QString(), sync);
+	form->addRow(tr("Vertical size"), verticalSize);
+	form->addRow(tr("Vertical framing"), verticalFit);
 
 	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
 					     &dialog);
@@ -659,7 +714,17 @@ void MultistreamDock::showOptions()
 	config().reconnect_retries = retries->value();
 	config().reconnect_delay_sec = delay->value();
 	config().sync_on_launch = sync->isChecked();
+	config().vertical_crop = verticalFit->currentData().toBool();
+
+	const QSize portrait = verticalSize->currentData().toSize();
+	config().vertical_width = portrait.width();
+	config().vertical_height = portrait.height();
+
 	save_config();
+
+	// Takes effect now, so the preview in the canvas dock reshapes as soon as
+	// this closes rather than at the next stream.
+	vertical_resize();
 
 	// Deliberately not applied to anything already running: changing the retry
 	// count mid-stream should not restart a destination that is up.
@@ -828,7 +893,6 @@ void MultistreamDock::refreshStatuses()
 
 		const Destination &destination = config().destinations[static_cast<size_t>(row)];
 		QTableWidgetItem *item = table_->item(row, 3);
-		QTableWidgetItem *health = table_->item(row, 4);
 
 		if (!item) {
 			continue;
@@ -847,67 +911,74 @@ void MultistreamDock::refreshStatuses()
 		if (!found) {
 			// Not running: say whether it could, which is what matters while
 			// setting up.
+			const bool ready = !destination.key.empty() && destination.enabled;
+
 			item->setText(destination.key.empty()  ? tr("No stream key yet")
 				      : !destination.enabled ? tr("Off")
 							     : tr("Ready"));
+			item->setData(RowDelegate::StateRole,
+				      static_cast<int>(ready ? RowState::Ready
+							     : RowState::Unconfigured));
 			item->setToolTip(QString());
-
-			if (health) {
-				health->setText(QString());
-				health->setToolTip(QString());
-			}
-
 			continue;
 		}
 
 		switch (found->state) {
-		case OutputState::Live:
-			item->setText(tr("Live"));
-			item->setToolTip(QString());
-			break;
 		case OutputState::Starting:
 			item->setText(tr("Connecting"));
+			item->setData(RowDelegate::StateRole, static_cast<int>(RowState::Starting));
 			item->setToolTip(QString());
 			break;
+
+		case OutputState::Live: {
+			// The measured rate and the uptime, because "Live" on its own is
+			// the one thing a streamer can already see. A destination can be
+			// live and still be losing a tenth of its frames to an upload
+			// that cannot carry it, and that is the answer to "why does my
+			// stream look bad" that a status word never gives.
+			const double dropped = found->drop_percent();
+
+			QString text = tr("%1 kbps").arg(found->bitrate_kbps);
+
+			if (found->uptime_sec > 0) {
+				text += QStringLiteral("  %1").arg(short_uptime(found->uptime_sec));
+			}
+
+			if (dropped >= 0.05) {
+				text += tr("  %1% dropped").arg(dropped, 0, 'f', 1);
+			}
+
+			item->setText(text);
+
+			// Half a percent is worth seeing; a couple is worth acting on.
+			item->setData(RowDelegate::StateRole,
+				      static_cast<int>(dropped >= 0.5 ? RowState::Dropping
+								      : RowState::Live));
+
+			item->setToolTip(tr("Up %1, %2 of %3 frames dropped, %4 reconnect(s)")
+						 .arg(uptimeText(found->uptime_sec))
+						 .arg(found->dropped_frames)
+						 .arg(found->total_frames)
+						 .arg(found->reconnects));
+			break;
+		}
+
 		case OutputState::Failed:
-			item->setText(tr("Failed"));
+			// The reason, not the word: the reason is the thing somebody can
+			// act on, and there is room for it now the columns are merged.
+			item->setText(found->detail.empty()
+					      ? tr("Failed")
+					      : QString::fromStdString(found->detail));
+			item->setData(RowDelegate::StateRole, static_cast<int>(RowState::Failed));
 			item->setToolTip(QString::fromStdString(found->detail));
 			break;
+
 		default:
 			item->setText(tr("Stopped"));
+			item->setData(RowDelegate::StateRole, static_cast<int>(RowState::Ready));
 			item->setToolTip(QString());
 			break;
 		}
-
-		if (!health) {
-			continue;
-		}
-
-		// The measured rate, and the drop rate when there is one. This is the
-		// answer to "why does my stream look bad", which a status word alone
-		// never gives: a destination can be Live and still be losing a tenth of
-		// its frames because the upload cannot carry it.
-		const double dropped = found->drop_percent();
-
-		QString text = QStringLiteral("%1 kbps").arg(found->bitrate_kbps);
-
-		if (dropped >= 0.05) {
-			text += QStringLiteral("  %1% dropped").arg(dropped, 0, 'f', 1);
-		}
-
-		health->setText(text);
-
-		// Anything above a fraction of a percent is worth seeing, and above a
-		// couple of percent is worth worrying about.
-		health->setForeground(dropped >= 2.0   ? QBrush(QColor(0xf4, 0x3f, 0x5e))
-				      : dropped >= 0.5 ? QBrush(QColor(0xf0, 0xa5, 0x00))
-						       : QBrush());
-
-		health->setToolTip(tr("Up %1, %2 of %3 frames dropped, %4 reconnect(s)")
-					   .arg(uptimeText(found->uptime_sec))
-					   .arg(found->dropped_frames)
-					   .arg(found->total_frames)
-					   .arg(found->reconnects));
 	}
 }
 

@@ -21,7 +21,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <string>
 #include <vector>
 
-#include <obs-config.h>
+/* obs.h rather than just obs-config.h, which is all the version macros below
+ * need: vertical_canvas() hands back an obs_canvas_t, and that type has to be
+ * known to everyone who includes this. */
+#include <obs.h>
 
 /* Vertical needs obs_canvas_*, which arrived in libobs 31.1.
  *
@@ -82,11 +85,6 @@ void stop_one(const std::string &id);
 /* Whether the main stream is up, which decides whether start_one can do
  * anything. */
 bool streaming_live();
-
-/* Re-aims every vertical canvas at whatever is on program now. Call from the
- * frontend scene-changed event; destinations that are not vertical ignore it.
- * A no-op where the canvas API is missing. */
-void program_scene_changed();
 
 /* Whether this build can do vertical at all, for the dock to say so rather than
  * offering a tick box that quietly does nothing. */
