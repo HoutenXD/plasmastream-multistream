@@ -199,6 +199,8 @@ void load_config()
 		obs_data_array_release(framings);
 	}
 
+	g_config.canvases_introduced = obs_data_get_bool(data, "canvases_introduced");
+
 	g_config.vertical_sources.clear();
 	obs_data_array_t *sources = obs_data_get_array(data, "vertical_sources");
 
@@ -315,6 +317,8 @@ void save_config()
 
 	obs_data_set_array(data, "vertical_sources", sources);
 	obs_data_array_release(sources);
+
+	obs_data_set_bool(data, "canvases_introduced", g_config.canvases_introduced);
 
 	obs_data_array_t *array = obs_data_array_create();
 
