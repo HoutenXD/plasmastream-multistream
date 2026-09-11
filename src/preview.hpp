@@ -79,9 +79,14 @@ protected:
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
 	void resizeEvent(QResizeEvent *event) override;
+#if PLASMASTREAM_HAS_CANVAS
+	/* Declared with the same guard their definitions carry. Without it a build
+	 * against an OBS with no canvas declares three overrides nobody defines,
+	 * which compiles all the way to a link error. */
 	void mousePressEvent(QMouseEvent *event) override;
 	void mouseMoveEvent(QMouseEvent *event) override;
 	void mouseReleaseEvent(QMouseEvent *event) override;
+#endif
 
 	/* Qt would otherwise erase to the palette between OBS's frames. */
 	QPaintEngine *paintEngine() const override { return nullptr; }
