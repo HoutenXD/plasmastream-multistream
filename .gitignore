@@ -5,3 +5,7 @@
 
 # Build trees, one per platform preset.
 build_*/
+
+# Bumped by every local build, so tracking it puts a one-line diff in unrelated
+# commits. Each machine keeps its own count.
+cmake/.CMakeBuildNumber
