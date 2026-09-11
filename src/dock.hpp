@@ -29,28 +29,17 @@ class QTimer;
 
 namespace plasmastream {
 
-/**
- * The dock: the whole interface for the plugin.
- *
- * A dock rather than a settings dialog because the interesting information is
- * live. Which destinations are connected, and which one just dropped, is worth
- * having on screen next to the stream status OBS already shows, and a dialog you
- * have to open is a dialog nobody opens while streaming.
- */
+/* A dock rather than a settings dialog: which destinations are connected, and
+ * which just dropped, is worth having on screen beside OBS's own stream status.
+ * Nobody opens a dialog mid-stream. */
 class MultistreamDock : public QWidget {
 	Q_OBJECT
 
 public:
 	explicit MultistreamDock(QWidget *parent = nullptr);
 
-	/**
-	 * How large this wants to be before anybody drags it.
-	 *
-	 * A QDockWidget sizes itself from its child's hint, and a QTableWidget asks
-	 * for very little, so the dock opened at a width that truncated its own
-	 * column headers. This asks for enough to read a destination name and its
-	 * status side by side.
-	 */
+	/* QDockWidget takes its opening size from this, and a QTableWidget asks for
+	 * very little: without it the dock opens too narrow to read its own headers. */
 	QSize sizeHint() const override;
 
 private slots:
@@ -63,12 +52,9 @@ private slots:
 
 private:
 	void rebuildTable();
-	/** Show the table or the empty-state hint, never both. */
 	void updateEmptyState();
-	/** Enable or disable the buttons that need a selected row. */
 	void updateButtons();
 	void setNotice(const QString &text, bool warning);
-	/** Handle a finished sync, back on the Qt thread. */
 	void applyFetch(const HttpResponse &response);
 
 	QTableWidget *table_ = nullptr;
@@ -82,7 +68,6 @@ private:
 	QTimer *poll_ = nullptr;
 };
 
-/** Build the dock and hand it to OBS. Call once, during module load. */
 void register_dock();
 
 } // namespace plasmastream

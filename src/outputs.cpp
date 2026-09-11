@@ -30,14 +30,8 @@ namespace plasmastream {
 
 namespace {
 
-/**
- * One extra destination, live.
- *
- * The service and the output are both owned here and released together. OBS will
- * happily keep a service alive that nothing points at, so forgetting one is a
- * leak that only shows up after somebody has streamed twenty times in one
- * session, which is exactly the person least likely to report it.
- */
+/* Output and service are owned together; OBS will keep a service alive that
+ * nothing points at. */
 struct RunningOutput {
 	std::string id;
 	std::string name;
@@ -47,28 +41,12 @@ struct RunningOutput {
 	std::string detail;
 };
 
-/**
- * Held by pointer, and that is not a style choice.
- *
- * libobs signal handlers take a void* that they hand back on every callback, and
- * the obvious thing to pass is a pointer into this container. Store the objects
- * by value in a vector and the second push_back reallocates, so every handler
- * registered for an earlier destination is left pointing at freed memory. It
- * would work perfectly with one destination and corrupt memory with two, during
- * a live stream, which is the worst possible way to find out.
- *
- * unique_ptr keeps each object's address fixed for its whole life no matter what
- * the container does.
- */
+/* unique_ptr, not by value: the signal handlers below hold a void* into these,
+ * and a vector reallocating on the second push_back would leave every handler
+ * registered so far pointing at freed memory. */
 std::vector<std::unique_ptr<RunningOutput>> g_running;
 
-/**
- * Guards g_running.
- *
- * The reads and writes genuinely happen on different threads: the dock polls for
- * status on the Qt thread while libobs fires start and stop signals on its own.
- * Without this, a destination dropping mid-stream races the table repaint.
- */
+/* The dock polls status on the Qt thread while libobs fires signals on its own. */
 std::mutex g_mutex;
 
 void handle_stop(void *data, calldata_t *params)
@@ -91,8 +69,6 @@ void handle_stop(void *data, calldata_t *params)
 
 	running->state = OutputState::Failed;
 
-	// Translated into something a streamer can act on. "Error -4" tells them
-	// nothing; "the stream key was rejected" tells them where to look.
 	switch (code) {
 	case OBS_OUTPUT_BAD_PATH:
 		running->detail = obs_module_text("Error.BadPath");
@@ -136,8 +112,6 @@ void start_outputs()
 {
 	stop_outputs();
 
-	// The main stream is what everything here attaches to. No main stream means
-	// no encoders to borrow, so there is nothing this plugin can do.
 	obs_output_t *main_output = obs_frontend_get_streaming_output();
 
 	if (!main_output) {
@@ -145,7 +119,7 @@ void start_outputs()
 		return;
 	}
 
-	// Borrowed pointers, owned by the main output, so not released here.
+	/* Borrowed from the main output, so not released here. */
 	obs_encoder_t *video = obs_output_get_video_encoder(main_output);
 	obs_encoder_t *audio = obs_output_get_audio_encoder(main_output, 0);
 
@@ -166,9 +140,8 @@ void start_outputs()
 		running->id = destination.id.empty() ? destination.name : destination.id;
 		running->name = destination.name.empty() ? destination.url : destination.name;
 
-		// rtmp_custom rather than one of the named services, because a named
-		// service carries its own ingest list and would override the address
-		// the streamer typed. They picked it; it is not ours to improve on.
+		/* rtmp_custom, not a named service: those carry their own ingest list
+		 * and would override the address the streamer typed. */
 		obs_data_t *service_settings = obs_data_create();
 		obs_data_set_string(service_settings, "server", destination.url.c_str());
 		obs_data_set_string(service_settings, "key", destination.key.c_str());
@@ -197,14 +170,10 @@ void start_outputs()
 
 		obs_output_set_service(running->output, running->service);
 
-		// The shared encoders. This is the line that makes a second destination
-		// nearly free: the frames are already compressed for the first one.
+		/* Shared, so the frames are compressed once for all destinations. */
 		obs_output_set_video_encoder(running->output, video);
 		obs_output_set_audio_encoder(running->output, audio, 0);
 
-		// Reconnect on its own, the way the main output does. A destination
-		// that drops for ten seconds should come back rather than stay dead for
-		// the rest of the stream.
 		obs_output_set_reconnect_settings(running->output, 20, 5);
 
 		running->state = OutputState::Starting;
@@ -216,8 +185,7 @@ void start_outputs()
 			g_running.push_back(std::move(running));
 		}
 
-		// Connected before the start attempt, so a failure fast enough to fire
-		// synchronously still finds a handler.
+		/* Before the start attempt, so a synchronous failure still finds them. */
 		signal_handler_t *signals = obs_output_get_signal_handler(stable->output);
 		signal_handler_connect(signals, "start", handle_start, stable);
 		signal_handler_connect(signals, "stop", handle_stop, stable);
@@ -250,14 +218,9 @@ void stop_outputs()
 		to_stop.swap(g_running);
 	}
 
-	// Stopped outside the lock. obs_output_stop can block while the output
-	// flushes, and holding the mutex through that would stall the dock's status
-	// poll on the Qt thread: the UI freezing at exactly the moment somebody is
-	// watching to see whether their stream ended cleanly.
-	//
-	// The handlers are disconnected FIRST. They capture the RunningOutput
-	// address, and the objects here are destroyed when this function returns, so
-	// a signal arriving after that would be handed freed memory.
+	/* Outside the lock: obs_output_stop blocks while the output flushes, and the
+	 * dock polls status on the Qt thread. Handlers come off first, since they
+	 * hold addresses of objects destroyed when this returns. */
 	for (std::unique_ptr<RunningOutput> &running : to_stop) {
 		if (running->output) {
 			signal_handler_t *signals = obs_output_get_signal_handler(running->output);

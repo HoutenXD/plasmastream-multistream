@@ -53,20 +53,11 @@ namespace plasmastream {
 
 namespace {
 
-/**
- * The platforms offered in the dropdown, with the ingest address each one
- * publishes.
+/* Starting addresses only. Platforms run regional ingests and hand some
+ * streamers a different one, so the field stays editable.
  *
- * A starting value, never a lock. Every platform runs regional ingests and hands
- * some streamers a different address in their own dashboard, so the field stays
- * editable and what somebody types wins. Silently replacing an address they
- * pasted would be the kind of bug that only shows up live.
- *
- * Kept in step with DESTINATION_PLATFORMS in the website's db package. They are
- * two copies of one list, which is a real cost, but the alternative is a plugin
- * that cannot show a platform name until it has talked to a server it is
- * supposed to work without.
- */
+ * Mirrors DESTINATION_PLATFORMS on the website; duplicated so the plugin can
+ * name a platform without talking to a server it is meant to work without. */
 struct PlatformOption {
 	const char *key;
 	const char *label;
@@ -95,19 +86,8 @@ QString platform_label(const std::string &key)
 	return QObject::tr("Something else");
 }
 
-/**
- * Read a plugin key out of whatever somebody pasted.
- *
- * The dashboard's copy button hands over the whole URL,
- * https://plasmastream.live/api/plugin/<token>, because that is the useful thing
- * to look at on a web page. This asked for "the key" and then built that same URL
- * around it, so pasting the obvious thing produced the prefix twice and a 404
- * that blamed the key.
- *
- * Rather than telling people to edit a URL by hand, take either. Anything after
- * the last /api/plugin/ is the token, and a bare token has no such marker and is
- * returned untouched.
- */
+/* Takes either a bare token or the whole URL the dashboard's copy button hands
+ * over, since pasting that used to send the prefix twice and 404. */
 std::string read_token(const QString &pasted)
 {
 	QString token = pasted.trimmed();
@@ -119,7 +99,7 @@ std::string read_token(const QString &pasted)
 		token = token.mid(at + marker.length());
 	}
 
-	// A copied link can pick up a query string or a trailing slash on the way.
+	// A copied link can carry a query string or trailing slash.
 	token = token.section('?', 0, 0).section('#', 0, 0);
 
 	while (token.endsWith('/')) {
@@ -137,13 +117,8 @@ std::string make_local_id()
 	       std::to_string(static_cast<long long>(os_gettime_ns() / 1000000));
 }
 
-/**
- * The add and edit dialog.
- *
- * The stream key is a password field, and that is the one detail here that is
- * not cosmetic: people configure OBS while screen sharing, and a plain field
- * would put a credential that lets anybody broadcast as them onto a recording.
- */
+/* The stream key is a password field on purpose: people configure OBS while
+ * screen sharing. */
 bool edit_destination(QWidget *parent, Destination &destination, bool creating)
 {
 	QDialog dialog(parent);
@@ -171,9 +146,8 @@ bool edit_destination(QWidget *parent, Destination &destination, bool creating)
 		platform->setCurrentIndex(index);
 	}
 
-	// Choosing a platform fills the address in, but only while the box still
-	// holds whatever the last choice put there. Once somebody edits it, it is
-	// theirs and nothing overwrites it.
+	// Prefill only while the box still holds the last prefill; once edited it is
+	// theirs.
 	QObject::connect(platform, &QComboBox::currentIndexChanged, [platform, url]() {
 		const QString chosen = platform->currentData().toString();
 
@@ -248,14 +222,9 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	table_ = new QTableWidget(0, 4, this);
 	table_->setHorizontalHeaderLabels({tr("On"), tr("Destination"), tr("Where"), tr("Status")});
 
-	// Every column gets a mode, which the first version did not do. Setting only
-	// the middle two to Stretch left the checkbox column on Qt's 100px default,
-	// so a third of a narrow dock went to a tick box and the two columns anybody
-	// actually reads were squeezed until their own headers truncated.
-	//
-	// The checkbox is as wide as a checkbox. The name takes whatever is left,
-	// because it is the one field with no natural length. The platform and the
-	// status size to their own text, which is short and known.
+	// Every column needs a mode. Leave one out and it keeps Qt's 100px default,
+	// which in a narrow dock squeezes the columns that matter until their own
+	// headers truncate.
 	QHeaderView *header = table_->horizontalHeader();
 	header->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 	header->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -272,14 +241,11 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	table_->setWordWrap(false);
 	table_->setAlternatingRowColors(true);
 
-	// Nothing to scroll sideways to once the columns fit the dock, and a
-	// scrollbar that appears for one pixel of overflow is worse than a name
-	// elided with an ellipsis.
+	// Elide rather than scroll sideways.
 	table_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
 	table_->setTextElideMode(Qt::ElideRight);
 
-	// An empty table is a large blank rectangle with no hint of what to do, and
-	// that is the state every single person sees first.
+	// The first thing everyone sees, so it should say what to do.
 	empty_ = new QLabel(tr("No destinations yet.\n\nPress Add to send this stream somewhere "
 			       "as well as wherever OBS is already sending it."),
 			    this);
@@ -321,17 +287,14 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	connect(table_, &QTableWidget::itemSelectionChanged, this,
 		&MultistreamDock::updateButtons);
 
-	// Polled rather than pushed. libobs fires its signals on its own thread and
-	// the table has to be touched from the Qt thread, so the choice is a queued
-	// connection per output or one timer that reads a snapshot. The timer is far
-	// less to get wrong, and a second of lag on a status light costs nothing.
+	// Polled, not pushed: libobs signals arrive on its own thread and the table
+	// belongs to Qt's. A second of lag on a status light costs nothing.
 	poll_ = new QTimer(this);
 	poll_->setInterval(1000);
 	connect(poll_, &QTimer::timeout, this, &MultistreamDock::refreshStatuses);
 	poll_->start();
 
-	// A floor rather than a fixed size, so it can still be dragged narrower or
-	// docked into a thin column. It just cannot open there by default.
+	// A floor, not a fixed size: it can still be dragged narrower.
 	setMinimumWidth(360);
 
 	rebuildTable();
@@ -371,8 +334,7 @@ void MultistreamDock::rebuildTable()
 		auto *toggle = new QCheckBox(table_);
 		toggle->setChecked(destination.enabled);
 
-		// The row index is captured, not a pointer into the vector, because
-		// removing a destination reallocates it.
+		// Index, not a pointer: removing a destination reallocates.
 		connect(toggle, &QCheckBox::toggled, this, [row](bool on) {
 			if (row < static_cast<int>(config().destinations.size())) {
 				config().destinations[static_cast<size_t>(row)].enabled = on;
@@ -386,9 +348,7 @@ void MultistreamDock::rebuildTable()
 		table_->setItem(row, 2,
 				new QTableWidgetItem(platform_label(destination.platform)));
 
-		// The key is never shown, not even masked with its own length, which
-		// would leak how long it is. What matters to somebody looking at this
-		// row is whether one is set at all.
+		// Never show the key, not even masked: the length is itself a hint.
 		const QString status = destination.key.empty() ? tr("No stream key yet")
 							       : tr("Ready");
 		table_->setItem(row, 3, new QTableWidgetItem(status));
@@ -449,40 +409,17 @@ void MultistreamDock::removeSelected()
 	updateButtons();
 }
 
-/**
- * Pull the streamer's destinations from their PlasmaStream account.
+/* Optional: the plugin works with this never pressed.
  *
- * Entirely optional. The plugin works with this never pressed, which is the
- * whole design: somebody can install it, type their destinations in, and never
- * have an account.
+ * Merges rather than replaces. The website holds server URLs and names and no
+ * stream keys, so replacing the local list would wipe every key and leave
+ * destinations that cannot connect.
  *
- * ## Merging, rather than replacing
- *
- * The website holds server URLs and names, and deliberately holds no stream
- * keys. So a sync that replaced the local list would wipe every key the streamer
- * had entered and leave them with destinations that cannot connect. Existing
- * entries keep their key and take the server's name and address; new ones arrive
- * without a key and the table says so.
- *
- * ## Off the UI thread
- *
- * curl blocks, and blocking here would freeze OBS's whole interface for as long
- * as the request took. The worker holds a QPointer rather than a raw `this`,
- * because a streamer can close the dock while a slow request is still in flight
- * and delivering a result to a destroyed widget is a crash.
- */
-/**
- * Set, change, or clear the plugin key.
- *
- * Reachable at any time, from its own button. The first version only asked when
- * nothing was stored, which meant a key the server rejected could never be
- * replaced: sync failed, the prompt was skipped because a key existed, and there
- * was no way in from the interface at all.
- *
- * Pre-filled with whatever is stored so a typo can be corrected rather than
- * retyped, and clearing the box is how somebody disconnects from their account
- * without touching the destinations they have already set up.
- */
+ * Runs on a worker because curl blocks. The QPointer matters: the dock can be
+ * closed while a slow request is in flight. */
+/* Reachable at any time, not only when nothing is stored: a key the server
+ * rejects has to be replaceable. Empty disconnects the account and leaves the
+ * destinations alone. */
 void MultistreamDock::changeToken()
 {
 	bool ok = false;
@@ -510,8 +447,7 @@ void MultistreamDock::fetchFromPlasmaStream()
 	if (config().token.empty()) {
 		changeToken();
 
-		// Still nothing means they cancelled, and pressing sync with no key is
-		// not an error worth a red message.
+		// Cancelled.
 		if (config().token.empty()) {
 			return;
 		}
@@ -527,8 +463,7 @@ void MultistreamDock::fetchFromPlasmaStream()
 	std::thread([alive, url]() {
 		const HttpResponse response = http_get(url);
 
-		// Back to the Qt thread. Everything below touches widgets, and Qt
-		// permits that from exactly one thread.
+		// Widgets belong to the Qt thread.
 		QMetaObject::invokeMethod(
 			qApp,
 			[alive, response]() {
@@ -547,9 +482,7 @@ void MultistreamDock::applyFetch(const HttpResponse &response)
 	fetch_->setEnabled(true);
 
 	if (response.status == 404) {
-		// Forgotten, not kept. A key the server rejects is of no use, and holding
-		// on to it meant the next press of Sync skipped the prompt and failed
-		// again with no way in to correct it.
+		// Forget it, or the next Sync skips the prompt and fails the same way.
 		config().token.clear();
 		save_config();
 
@@ -561,10 +494,8 @@ void MultistreamDock::applyFetch(const HttpResponse &response)
 	}
 
 	if (!response.ok()) {
-		// The reason is included rather than swallowed. The first version of
-		// this collapsed every non-404 into "could not reach PlasmaStream",
-		// which is true, unactionable, and hid the fact that the real problem
-		// was Qt having no TLS backend inside OBS.
+		// Include curl's reason: "could not reach PlasmaStream" alone is not
+		// something anybody can act on.
 		const QString detail =
 			!response.error.empty()
 				? QString::fromStdString(response.error)
@@ -610,9 +541,7 @@ void MultistreamDock::applyFetch(const HttpResponse &response)
 		}
 
 		if (existing) {
-			// The key is pointedly not touched. It is the one field the server
-			// does not have, and overwriting it with nothing is how a sync
-			// silently breaks a working setup.
+			// Not the key: the server does not have one to give.
 			existing->name = object.value("name").toString().toStdString();
 			existing->platform = object.value("platform").toString().toStdString();
 			existing->url = object.value("ingestUrl").toString().toStdString();
@@ -654,8 +583,8 @@ void MultistreamDock::refreshStatuses()
 	const std::vector<OutputStatus> statuses = output_statuses();
 
 	if (statuses.empty()) {
-		// Not streaming. Fall back to whether each row could stream if asked,
-		// which is the useful thing to know while setting up.
+		// Not streaming: show whether each row could, which is what matters while
+		// setting up.
 		for (int row = 0; row < table_->rowCount(); row++) {
 			if (row >= static_cast<int>(config().destinations.size())) {
 				break;
@@ -736,8 +665,7 @@ void register_dock()
 	auto *dock = new MultistreamDock(main_window);
 	dock->setWindowTitle(QObject::tr("PlasmaStream Multistream"));
 
-	// _by_id rather than the older obs_frontend_add_dock, which is deprecated
-	// and leaves OBS unable to remember where the dock was put.
+	// _by_id, not the deprecated obs_frontend_add_dock: OBS remembers placement.
 	obs_frontend_add_dock_by_id("plasmastream_multistream", "PlasmaStream Multistream", dock);
 }
 

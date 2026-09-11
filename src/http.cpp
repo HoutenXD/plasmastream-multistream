@@ -36,14 +36,9 @@ size_t collect(char *data, size_t size, size_t count, void *user)
 
 void http_init()
 {
-	// Called once, from module load, on the main thread. curl_global_init is
-	// documented as not thread-safe, so it has to happen before anything spawns
-	// a worker.
-	//
-	// Deliberately never paired with curl_global_cleanup. OBS uses curl itself,
-	// and tearing down curl's global state when this module unloads would pull
-	// it out from under OBS. One leaked initialisation for the life of the
-	// process is the cheaper mistake.
+	/* Not thread-safe, hence the main thread before any worker exists. Never
+	 * paired with curl_global_cleanup: OBS uses curl too, and tearing down its
+	 * global state on module unload would pull it out from under OBS. */
 	curl_global_init(CURL_GLOBAL_DEFAULT);
 }
 
@@ -67,14 +62,9 @@ HttpResponse http_get(const std::string &url)
 	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(curl, CURLOPT_USERAGENT, "PlasmaStream-Multistream-OBS");
 
-	// A dock button must not hang the plugin because a server is slow, and a
-	// streamer pressing sync is waiting for an answer either way.
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
 
-	// Certificate checking stays ON. This carries no secret in either direction,
-	// but a sync that silently accepted any certificate would be a habit worth
-	// not forming, and there is nothing here that needs it turned off.
 	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
 	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
 

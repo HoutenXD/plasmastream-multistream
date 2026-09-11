@@ -28,8 +28,6 @@ namespace {
 
 Config g_config;
 
-/** OBS's own JSON, rather than a third-party parser: it is already linked, it is
- *  what every other plugin uses, and it never throws. */
 obs_data_t *destination_to_data(const Destination &destination)
 {
 	obs_data_t *data = obs_data_create();
@@ -51,9 +49,8 @@ Destination destination_from_data(obs_data_t *data)
 	destination.url = obs_data_get_string(data, "url");
 	destination.key = obs_data_get_string(data, "key");
 
-	// Defaults to true when the field is absent, which matters for a config
-	// written by an older build: a destination that quietly turned itself off
-	// after an update would look like the plugin had broken.
+	/* Absent in configs written before this field existed; those destinations
+	 * were on. */
 	obs_data_set_default_bool(data, "enabled", true);
 	destination.enabled = obs_data_get_bool(data, "enabled");
 
@@ -69,8 +66,6 @@ Config &config()
 
 std::string config_path()
 {
-	// obs_module_config_path gives the per-plugin directory inside the OBS
-	// profile, which is per user and survives an OBS upgrade.
 	char *path = obs_module_config_path("config.json");
 
 	if (!path) {
@@ -92,7 +87,7 @@ void load_config()
 
 	obs_data_t *data = obs_data_create_from_json_file_safe(path.c_str(), "bak");
 
-	// No file yet, which is every first run. Defaults, no complaint.
+	/* No file yet: first run. */
 	if (!data) {
 		return;
 	}
@@ -132,8 +127,6 @@ void save_config()
 		return;
 	}
 
-	// The directory does not exist until something creates it, and on a first
-	// run nothing has. os_mkdirs is happy when it already exists.
 	char *dir = obs_module_config_path("");
 
 	if (dir) {
@@ -156,8 +149,8 @@ void save_config()
 	obs_data_set_array(data, "destinations", array);
 	obs_data_array_release(array);
 
-	// _safe writes to a temp file and renames, so a crash mid-write leaves the
-	// previous config intact rather than a half-written one holding no keys.
+	/* Temp file and rename, so a crash mid-write cannot leave a config holding
+	 * no stream keys. */
 	obs_data_save_json_safe(data, path.c_str(), "tmp", "bak");
 	obs_data_release(data);
 }
