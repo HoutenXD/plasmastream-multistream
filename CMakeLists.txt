@@ -4,15 +4,8 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake" NO_POLICY_SCO
 
 project(${_name} VERSION ${_version})
 
-# Both on, unlike the stock template, and both are load-bearing.
-#
-# The frontend API is how the plugin learns that streaming started, which is the
-# only moment the main encoder exists to borrow. libobs alone has no notion of
-# "the user pressed Start Streaming" in the UI.
-#
-# Qt is the dock. A multistream plugin with no interface would mean editing a
-# JSON file by hand, which is not a thing to ask of somebody who is about to go
-# live.
+# Both on, unlike the stock template. The frontend API is the only way to learn
+# that streaming started, which is the only moment the encoders exist to borrow.
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" ON)
 option(ENABLE_QT "Use Qt functionality" ON)
 
@@ -43,14 +36,8 @@ if(ENABLE_QT)
   )
 endif()
 
-# libcurl, for the one HTTP GET that syncs destinations.
-#
-# NOT Qt Network, which was the first attempt and cannot do HTTPS inside OBS. Qt
-# loads a TLS backend from a "tls" plugin directory, and OBS ships "platforms",
-# "styles" and "imageformats" and not that one, so every https request failed
-# before leaving the process.
-#
-# curl is not a new dependency: OBS ships libcurl.dll and uses it itself.
+# Not Qt Network: Qt loads its TLS backend from a "tls" plugin directory OBS
+# does not ship, so https fails at handshake. OBS ships and uses libcurl itself.
 find_package(CURL REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE CURL::libcurl)
 
