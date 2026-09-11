@@ -198,7 +198,18 @@ bool edit_destination(QWidget *parent, Destination &destination, bool creating)
 	// it quietly forces on.
 	auto *vertical = new QCheckBox(QObject::tr("Send this one a vertical 9:16 frame"),
 				       &dialog);
-	vertical->setChecked(destination.vertical);
+	vertical->setChecked(destination.vertical && vertical_supported());
+
+	// A build against libobs older than 31.1 has no canvas to render into, so
+	// the box is disabled and says why rather than being offered and ignored.
+	// That is the Linux distribution packages, not a hypothetical.
+	if (!vertical_supported()) {
+		vertical->setEnabled(false);
+		vertical->setToolTip(
+			QObject::tr("This build was made against a version of OBS without the "
+				    "canvas support vertical needs. Build against OBS 31.1 or "
+				    "newer to use it."));
+	}
 
 	auto *verticalSize = new QComboBox(&dialog);
 	verticalSize->addItem(QObject::tr("1080 x 1920"), QSize(1080, 1920));
@@ -736,7 +747,10 @@ void MultistreamDock::applyFetch(const HttpResponse &response)
 	int added = 0;
 	int updated = 0;
 
-	for (const QJsonValue &value : incoming) {
+	// By value: QJsonArray's iterator returns a prvalue, so a const reference
+	// here binds to a temporary. Harmless in practice and clang rejects it
+	// anyway, which under the CI presets means the build fails on macOS only.
+	for (const QJsonValue value : incoming) {
 		const QJsonObject object = value.toObject();
 		const std::string id = object.value("id").toString().toStdString();
 

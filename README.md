@@ -84,14 +84,20 @@ Xcode 16 or newer, because the OBS template refuses anything below the macOS
 15.0 SDK.
 
 Linux builds against a libobs it finds on the system rather than a downloaded
-one, so the `.deb` only suits the OBS it was compiled against. Ubuntu's own
-`libobs-dev` is OBS 30, which predates `obs_canvas_*` and cannot build the
-vertical canvas at all, so take libobs from the project's PPA:
+one, because a plugin has to link against the libobs the user actually runs:
 
 ```
-sudo add-apt-repository ppa:obsproject/obs-studio
 sudo apt install libobs-dev libcurl4-openssl-dev qt6-base-dev qt6-base-private-dev ninja-build
 ```
+
+On Ubuntu 24.04 that is OBS 30.0.2, which predates `obs_canvas_*`, so a build
+there comes out **without vertical**. The `PLASMASTREAM_HAS_CANVAS` test in
+`outputs.hpp` compiles the canvas out and the dock disables the tick box with a
+note saying why. Building against OBS 31.1 or newer, from source or from a
+distribution that carries it, gets vertical back.
+
+The OBS PPA does not solve this: it publishes `obs-studio` and no `libobs-dev`,
+so apt resolves the headers from the Ubuntu archive regardless.
 
 CI builds all three on every push and attaches them to a draft release on a
 version tag. See `.github/workflows/build.yaml`.
@@ -121,9 +127,12 @@ OBS loads plugins at startup, so restart it after copying.
 `buildspec.json` pins OBS 31.1.1 rather than the newest release, so the plugin
 loads on more than just the current one.
 
-**31.1 is the floor, not 31.0.** The vertical canvas uses `obs_canvas_*`, which
-arrived in 31.1, and those are ordinary imports: on an older OBS the module fails
-to load outright rather than loading without that one feature.
+**31.1 is the floor for a build that has vertical.** `obs_canvas_*` arrived in
+31.1 and they are ordinary imports, so a binary built with them does not load on
+an older OBS at all. `PLASMASTREAM_HAS_CANVAS` is what keeps that from meaning
+"no Linux build": compiled against older headers the plugin drops vertical and
+works everywhere else. The Windows and macOS releases are built against 31.1.1
+and therefore need 31.1; the `.deb` is built against 30 and therefore does not.
 
 ## Where this is published
 
