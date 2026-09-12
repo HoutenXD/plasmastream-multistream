@@ -18,6 +18,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "appearance.hpp"
 
+#include <QHeaderView>
+#include <QTableWidget>
+
 #include <QApplication>
 #include <QPainter>
 #include <QPainterPath>
@@ -258,6 +261,59 @@ QSize RowDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelInde
 	}
 
 	return size;
+}
+
+void set_up_destination_columns(QTableWidget *table)
+{
+	QHeaderView *header = table->horizontalHeader();
+
+	/* A checkbox, so its content really is a bounded thing to size to. */
+	header->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+
+	/* Takes whatever the other three leave. */
+	header->setSectionResizeMode(1, QHeaderView::Stretch);
+
+	/* Ours to set, in lay_out_destination_columns below. */
+	header->setSectionResizeMode(2, QHeaderView::Interactive);
+	header->setSectionResizeMode(3, QHeaderView::Interactive);
+
+	header->setStretchLastSection(false);
+	header->setHighlightSections(false);
+
+	/* Nothing may push a column off the right edge, which is the failure this
+	 * replaces. Columns that do not fit elide instead, and the tooltip has the
+	 * rest. */
+	table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	table->setTextElideMode(Qt::ElideRight);
+}
+
+void lay_out_destination_columns(QTableWidget *table)
+{
+	const int width = table->viewport()->width();
+
+	if (width <= 0) {
+		return;
+	}
+
+	/* Column 0 is sized by its contents, so what is left to share is
+	 * everything after it. */
+	const int spare = width - table->columnWidth(0);
+
+	if (spare <= 0) {
+		return;
+	}
+
+	/* Where holds a platform name, or a host for a custom one. It is the least
+	 * interesting of the three, so it gets the smallest share.
+	 *
+	 * State is what somebody reads while live, so it gets the largest share
+	 * that still leaves Destination room to be a name rather than an initial. */
+	const int where = qBound(64, spare * 18 / 100, 150);
+	const int state = qBound(96, spare * 32 / 100, 280);
+
+	/* Destination is Stretch, so it takes the remainder on its own. */
+	table->setColumnWidth(2, where);
+	table->setColumnWidth(3, state);
 }
 
 } // namespace plasmastream

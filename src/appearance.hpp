@@ -22,6 +22,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QIcon>
 #include <QStyledItemDelegate>
 
+class QTableWidget;
+
 namespace plasmastream {
 
 /* Which colors come from us and which come from OBS.
@@ -91,5 +93,24 @@ public:
 
 	QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override;
 };
+
+/* Set up the destination table's four columns, and share its width between
+ * them whenever that width changes.
+ *
+ * Not ResizeToContents, which is what this used to be. That sizes a column to
+ * the widest thing that has ever been in it, and the State column holds a whole
+ * sentence when a destination fails ("The stream key was rejected. Copy it
+ * again from the platform."). On a dock dragged narrow, Where and State were
+ * pushed off the right edge completely, where no amount of resizing brought
+ * them back.
+ *
+ * So the two right-hand columns take a share of whatever room there is, within
+ * limits, and Destination takes the rest. Long text elides, which is fine: the
+ * whole of it is in the tooltip, and half a reason on screen beats none.
+ *
+ * Lives here rather than in the dock so the offscreen preview under tools/ can
+ * exercise the real thing instead of a copy that might drift from it. */
+void set_up_destination_columns(QTableWidget *table);
+void lay_out_destination_columns(QTableWidget *table);
 
 } // namespace plasmastream
