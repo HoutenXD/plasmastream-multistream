@@ -41,8 +41,9 @@ namespace {
 
 struct Recording {
 	obs_canvas_t *canvas = nullptr;
-	obs_scene_t *scene = nullptr;
-	obs_sceneitem_t *item = nullptr;
+
+	/* The user's own scene, held while it is on the canvas. */
+	obs_source_t *source = nullptr;
 
 	obs_output_t *output = nullptr;
 	obs_encoder_t *video = nullptr;
@@ -114,17 +115,19 @@ void release_all()
 		g_rec.audio = nullptr;
 	}
 
-	if (g_rec.item) {
-		obs_sceneitem_remove(g_rec.item);
-		obs_sceneitem_release(g_rec.item);
-		g_rec.item = nullptr;
-	}
-
 	if (g_rec.canvas) {
+		/* Clearing the channel is what gives the scene its activation back;
+		 * destroying the canvas does it too, but doing it here means the
+		 * order is ours rather than the refcount's. */
+		obs_canvas_set_channel(g_rec.canvas, 0, nullptr);
 		obs_canvas_remove(g_rec.canvas);
 		obs_canvas_release(g_rec.canvas);
 		g_rec.canvas = nullptr;
-		g_rec.scene = nullptr;
+	}
+
+	if (g_rec.source) {
+		obs_source_release(g_rec.source);
+		g_rec.source = nullptr;
 	}
 
 	g_rec.running = false;
@@ -222,45 +225,17 @@ bool build_canvas(const std::string &scene_name)
 		return false;
 	}
 
-	g_rec.scene = obs_canvas_scene_create(g_rec.canvas, "PlasmaStream recording");
+	/* Straight onto the canvas, with no wrapper scene holding it as an item.
+	 *
+	 * There used to be one, with bounds set to the frame. It bought nothing:
+	 * this canvas is the same size as the main one, so there is no scaling to
+	 * do and the whole transform was an identity. What it cost was a level of
+	 * nesting, and a scene rendered as an item inside another scene does not
+	 * go through the same path as a scene rendered as a canvas channel. Capture
+	 * sources came out black through the nested path. */
+	obs_canvas_set_channel(g_rec.canvas, 0, scene);
 
-	if (!g_rec.scene) {
-		obs_source_release(scene);
-		obs_canvas_remove(g_rec.canvas);
-		obs_canvas_release(g_rec.canvas);
-		g_rec.canvas = nullptr;
-		return false;
-	}
-
-	/* The scene sits on this canvas as well as wherever else it appears; OBS
-	 * has always let a source live in more than one scene, and this is that. */
-	obs_sceneitem_t *item = obs_scene_add(g_rec.scene, scene);
-
-	obs_source_release(scene);
-
-	if (!item) {
-		release_all();
-		return false;
-	}
-
-	obs_sceneitem_addref(item);
-	g_rec.item = item;
-
-	/* Whole frame, untouched. A recording of a scene should be that scene. */
-	vec2 bounds;
-	vec2_set(&bounds, static_cast<float>(ovi.base_width),
-		 static_cast<float>(ovi.base_height));
-
-	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_SCALE_INNER);
-	obs_sceneitem_set_bounds(item, &bounds);
-	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
-	obs_sceneitem_set_alignment(item, OBS_ALIGN_LEFT | OBS_ALIGN_TOP);
-
-	vec2 origin;
-	vec2_set(&origin, 0.0f, 0.0f);
-	obs_sceneitem_set_pos(item, &origin);
-
-	obs_canvas_set_channel(g_rec.canvas, 0, obs_scene_get_source(g_rec.scene));
+	g_rec.source = scene;
 	return true;
 }
 
@@ -438,6 +413,7 @@ bool scene_recording_start()
 	blog(LOG_INFO, "[plasmastream] recording scene '%s' to %s", settings.scene.c_str(),
 	     g_rec.file.c_str());
 
+
 	return true;
 }
 
@@ -499,6 +475,150 @@ SceneRecordingStatus scene_recording_status()
 bool scene_recording_supported()
 {
 	return true;
+}
+
+namespace {
+
+/* Which of OBS's six tracks the stream is sending. Simple output mode is always
+ * the first; advanced mode is wherever it was pointed. */
+int streaming_track()
+{
+	config_t *profile = obs_frontend_get_profile_config();
+
+	if (!profile) {
+		return 1;
+	}
+
+	const char *mode = config_get_string(profile, "Output", "Mode");
+
+	if (!mode || strcmp(mode, "Advanced") != 0) {
+		return 1;
+	}
+
+	const int track = static_cast<int>(config_get_int(profile, "AdvOut", "TrackIndex"));
+	return track >= 1 && track <= 6 ? track : 1;
+}
+
+struct AudioHunt {
+	/* Bit of the track the stream is on. A source not on it cannot be heard
+	 * there however loud it is. */
+	uint32_t stream_track_bit = 1;
+
+	/* The microphone and desktop audio, which are on the stream already and so
+	 * are not news. */
+	std::vector<obs_source_t *> globals;
+
+	std::vector<std::string> found;
+};
+
+bool hunt_item(obs_scene_t *, obs_sceneitem_t *item, void *param);
+
+void hunt_source(obs_source_t *source, AudioHunt &hunt)
+{
+	if (!source) {
+		return;
+	}
+
+	/* A scene inside a scene is a real thing people build, and its audio
+	 * reaches the stream by the same route. */
+	obs_scene_t *nested = obs_scene_from_source(source);
+
+	if (nested) {
+		obs_scene_enum_items(nested, hunt_item, &hunt);
+		return;
+	}
+
+	if ((obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO) == 0) {
+		return;
+	}
+
+	if (obs_source_muted(source)) {
+		return;
+	}
+
+	if ((obs_source_get_audio_mixers(source) & hunt.stream_track_bit) == 0) {
+		return;
+	}
+
+	for (obs_source_t *global : hunt.globals) {
+		if (global == source) {
+			return;
+		}
+	}
+
+	const char *name = obs_source_get_name(source);
+
+	if (!name || !*name) {
+		return;
+	}
+
+	/* One source can sit in a scene more than once, and naming it twice reads
+	 * as two problems. */
+	for (const std::string &already : hunt.found) {
+		if (already == name) {
+			return;
+		}
+	}
+
+	hunt.found.push_back(name);
+}
+
+bool hunt_item(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	auto &hunt = *static_cast<AudioHunt *>(param);
+
+	/* A hidden source is not rendered and not heard. */
+	if (!obs_sceneitem_visible(item)) {
+		return true;
+	}
+
+	if (obs_sceneitem_is_group(item)) {
+		obs_sceneitem_group_enum_items(item, hunt_item, &hunt);
+		return true;
+	}
+
+	hunt_source(obs_sceneitem_get_source(item), hunt);
+	return true;
+}
+
+} // namespace
+
+std::vector<std::string> scene_audio_reaching_stream(const std::string &scene_name)
+{
+	obs_source_t *source = obs_get_source_by_name(scene_name.c_str());
+
+	if (!source) {
+		return {};
+	}
+
+	obs_scene_t *scene = obs_scene_from_source(source);
+
+	if (!scene) {
+		obs_source_release(source);
+		return {};
+	}
+
+	AudioHunt hunt;
+	hunt.stream_track_bit = 1u << (streaming_track() - 1);
+
+	/* Channel 0 is whatever is on programme; 1 to 5 are the audio devices OBS
+	 * mixes in on their own, which is why they are not a surprise. */
+	for (uint32_t channel = 1; channel <= 5; channel++) {
+		obs_source_t *global = obs_get_output_source(channel);
+
+		if (global) {
+			hunt.globals.push_back(global);
+		}
+	}
+
+	obs_scene_enum_items(scene, hunt_item, &hunt);
+
+	for (obs_source_t *global : hunt.globals) {
+		obs_source_release(global);
+	}
+
+	obs_source_release(source);
+	return hunt.found;
 }
 
 obs_canvas_t *scene_recording_canvas()
