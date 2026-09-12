@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "config.hpp"
 #include "http.hpp"
 #include "outputs.hpp"
+#include "scenerec.hpp"
 #include "vertical.hpp"
 
 #include <thread>
@@ -36,6 +37,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QFileDialog>
+#include <QFrame>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -43,6 +46,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QApplication>
 #include <QJsonParseError>
 #include <QPointer>
@@ -98,6 +102,62 @@ std::vector<const char *> available_encoders()
 	}
 
 	return ids;
+}
+
+/* Every scene in the collection, in the order OBS lists them. */
+QStringList scene_names()
+{
+	QStringList names;
+
+	obs_frontend_source_list scenes = {};
+	obs_frontend_get_scenes(&scenes);
+
+	for (size_t i = 0; i < scenes.sources.num; i++) {
+		const char *name = obs_source_get_name(scenes.sources.array[i]);
+
+		if (name && *name) {
+			names.append(QString::fromUtf8(name));
+		}
+	}
+
+	obs_frontend_source_list_free(&scenes);
+	return names;
+}
+
+/* Bytes as something that fits on one line beside a clock. */
+QString short_size(uint64_t bytes)
+{
+	if (bytes < 1024ULL * 1024ULL) {
+		return QObject::tr("%1 KB").arg(bytes / 1024ULL);
+	}
+
+	if (bytes < 1024ULL * 1024ULL * 1024ULL) {
+		return QObject::tr("%1 MB").arg(bytes / (1024ULL * 1024ULL));
+	}
+
+	const uint64_t gb = 1024ULL * 1024ULL * 1024ULL;
+
+	return QObject::tr("%1.%2 GB").arg(bytes / gb).arg((bytes % gb) * 10ULL / gb);
+}
+
+/* A hairline above a group, so the recording row reads as its own thing rather
+ * than as one more button under the destination list. */
+QFrame *divider(QWidget *parent)
+{
+	auto *line = new QFrame(parent);
+	line->setFrameShape(QFrame::HLine);
+	line->setFrameShadow(QFrame::Plain);
+
+	/* Stylesheet, not palette: an OBS theme is a stylesheet and would win. */
+	QColor rule = color::muted();
+	rule.setAlpha(70);
+	line->setStyleSheet(QStringLiteral("color: rgba(%1,%2,%3,%4);")
+				    .arg(rule.red())
+				    .arg(rule.green())
+				    .arg(rule.blue())
+				    .arg(rule.alpha()));
+
+	return line;
 }
 
 /* Where this actually goes.
@@ -436,6 +496,15 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	notice_->setWordWrap(true);
 	notice_->setVisible(false);
 
+	recordingState_ = new QLabel(this);
+	recordingState_->setTextFormat(Qt::PlainText);
+
+	recordingSetUp_ = new QPushButton(tr("Record a scene..."), this);
+	recordingToggle_ = new QPushButton(tr("Start"), this);
+
+	connect(recordingSetUp_, &QPushButton::clicked, this, &MultistreamDock::setUpRecording);
+	connect(recordingToggle_, &QPushButton::clicked, this, &MultistreamDock::toggleRecording);
+
 	auto *buttons = new QHBoxLayout;
 	buttons->addWidget(add_);
 	buttons->addWidget(edit_);
@@ -451,6 +520,15 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	syncRow->addWidget(keyButton_);
 	syncRow->addWidget(options_);
 	layout->addLayout(syncRow);
+
+	layout->addWidget(divider(this));
+
+	auto *recordingRow = new QHBoxLayout;
+	recordingRow->addWidget(recordingState_, 1);
+	recordingRow->addWidget(recordingSetUp_);
+	recordingRow->addWidget(recordingToggle_);
+	layout->addLayout(recordingRow);
+
 	layout->addWidget(notice_);
 
 	connect(add_, &QPushButton::clicked, this, &MultistreamDock::addDestination);
@@ -474,6 +552,7 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 
 	rebuildTable();
 	updateButtons();
+	refreshRecording();
 }
 
 QSize MultistreamDock::sizeHint() const
@@ -636,6 +715,258 @@ void MultistreamDock::changeToken()
 
 	setNotice(config().token.empty() ? tr("Plugin key cleared.") : tr("Plugin key saved."),
 		  false);
+}
+
+/* Set up recording a scene other than the one going out.
+ *
+ * The pitch is on the dialog itself, because the whole feature is one somebody
+ * has to be told exists: OBS records the programme, so today the choice is a
+ * clean recording or a stream with a chat box, and this is how you stop
+ * choosing. */
+void MultistreamDock::setUpRecording()
+{
+	if (!scene_recording_supported()) {
+		QMessageBox::information(
+			this, tr("Not in this version of OBS"),
+			tr("Recording a second scene needs OBS 31.1 or newer, which is where "
+			   "the second canvas this uses arrived.\n\nEverything else in "
+			   "PlasmaStream works as it is."));
+		return;
+	}
+
+	const QStringList scenes = scene_names();
+
+	if (scenes.isEmpty()) {
+		QMessageBox::information(this, tr("No scenes yet"),
+					 tr("Make the scene you want recorded first, then come "
+					    "back and pick it here."));
+		return;
+	}
+
+	SceneRecording settings = config().scene_recording;
+
+	QDialog dialog(this);
+	dialog.setWindowTitle(tr("Record a scene"));
+
+	auto *enabled = new QCheckBox(tr("Record a scene while I stream"), &dialog);
+	enabled->setChecked(settings.enabled);
+
+	auto *scene = new QComboBox(&dialog);
+	scene->addItems(scenes);
+
+	const int sceneIndex = scene->findText(QString::fromStdString(settings.scene));
+
+	if (sceneIndex >= 0) {
+		scene->setCurrentIndex(sceneIndex);
+	}
+
+	auto *withStream = new QCheckBox(tr("Start and stop it with my stream"), &dialog);
+	withStream->setChecked(settings.with_stream);
+
+	auto *folder = new QLineEdit(QString::fromStdString(settings.folder), &dialog);
+
+	/* Blank means OBS's own recording folder, which is almost always what
+	 * somebody wants and is worth saying rather than leaving them to guess. */
+	char *configured = obs_frontend_get_current_record_output_path();
+
+	if (configured) {
+		folder->setPlaceholderText(
+			tr("Where OBS records (%1)").arg(QString::fromUtf8(configured)));
+		bfree(configured);
+	} else {
+		folder->setPlaceholderText(tr("Where OBS records"));
+	}
+
+	auto *browse = new QPushButton(tr("Browse..."), &dialog);
+
+	connect(browse, &QPushButton::clicked, &dialog, [&dialog, folder]() {
+		const QString chosen = QFileDialog::getExistingDirectory(
+			&dialog, tr("Where should the recordings go?"), folder->text());
+
+		if (!chosen.isEmpty()) {
+			folder->setText(chosen);
+		}
+	});
+
+	auto *folderRow = new QHBoxLayout;
+	folderRow->addWidget(folder, 1);
+	folderRow->addWidget(browse);
+
+	auto *format = new QComboBox(&dialog);
+	format->addItem(tr("mkv, survives a crash"), QStringLiteral("mkv"));
+	format->addItem(tr("mp4, opens anywhere"), QStringLiteral("mp4"));
+
+	const int formatIndex = format->findData(QString::fromStdString(settings.format));
+
+	if (formatIndex >= 0) {
+		format->setCurrentIndex(formatIndex);
+	}
+
+	auto *bitrate = new QSpinBox(&dialog);
+	bitrate->setRange(1000, 60000);
+	bitrate->setSingleStep(500);
+	bitrate->setSuffix(tr(" kbps"));
+	bitrate->setValue(settings.video_bitrate);
+
+	auto *encoder = new QComboBox(&dialog);
+	encoder->addItem(tr("Same kind as my stream"), QString());
+
+	for (const char *id : available_encoders()) {
+		encoder->addItem(QString::fromUtf8(obs_encoder_get_display_name(id)),
+				 QString::fromUtf8(id));
+	}
+
+	const int encoderIndex = encoder->findData(QString::fromStdString(settings.encoder_id));
+
+	if (encoderIndex >= 0) {
+		encoder->setCurrentIndex(encoderIndex);
+	}
+
+	auto *track = new QSpinBox(&dialog);
+	track->setRange(1, 6);
+	track->setValue(settings.audio_track);
+	track->setPrefix(tr("Track "));
+
+	auto *note = new QLabel(
+		tr("This records a second picture of its own, so it costs a second encode. "
+		   "The scene you pick runs whether or not it is the one on screen, which is "
+		   "the point: stream the scene with your chat box and alerts, keep the clean "
+		   "one for the video.\n\nIt does not touch OBS's own Start Recording button. "
+		   "Both can run at once."),
+		&dialog);
+	note->setWordWrap(true);
+
+	note->setStyleSheet(QStringLiteral("color: %1;").arg(color::muted().name()));
+
+	auto *form = new QFormLayout;
+	form->addRow(QString(), enabled);
+	form->addRow(tr("Scene to record"), scene);
+	form->addRow(QString(), withStream);
+	form->addRow(tr("Save to"), folderRow);
+	form->addRow(tr("File type"), format);
+	form->addRow(tr("Quality"), bitrate);
+	form->addRow(tr("Encoder"), encoder);
+	form->addRow(tr("Audio"), track);
+
+	/* Everything below the first box only means something once it is ticked. */
+	const auto followEnabled = [=]() {
+		const bool on = enabled->isChecked();
+
+		scene->setEnabled(on);
+		withStream->setEnabled(on);
+		folder->setEnabled(on);
+		browse->setEnabled(on);
+		format->setEnabled(on);
+		bitrate->setEnabled(on);
+		encoder->setEnabled(on);
+		track->setEnabled(on);
+	};
+
+	connect(enabled, &QCheckBox::toggled, &dialog, followEnabled);
+	followEnabled();
+
+	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+					     &dialog);
+	connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+	connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+	auto *layout = new QVBoxLayout(&dialog);
+	layout->addLayout(form);
+	layout->addWidget(note);
+	layout->addWidget(buttons);
+
+	if (dialog.exec() != QDialog::Accepted) {
+		return;
+	}
+
+	settings.enabled = enabled->isChecked();
+	settings.scene = scene->currentText().toStdString();
+	settings.with_stream = withStream->isChecked();
+	settings.folder = folder->text().trimmed().toStdString();
+	settings.format = format->currentData().toString().toStdString();
+	settings.video_bitrate = bitrate->value();
+	settings.encoder_id = encoder->currentData().toString().toStdString();
+	settings.audio_track = track->value();
+
+	config().scene_recording = settings;
+	save_config();
+
+	/* Deliberately not applied to a recording already in progress: changing the
+	 * bitrate should not cut the file somebody is in the middle of making. */
+	if (scene_recording_active()) {
+		setNotice(tr("Saved. It applies to the next recording, not the one running."),
+			  false);
+	}
+
+	refreshRecording();
+}
+
+void MultistreamDock::toggleRecording()
+{
+	if (scene_recording_active()) {
+		scene_recording_stop();
+		refreshRecording();
+		return;
+	}
+
+	/* Pressing Start before it is set up is somebody asking for the thing, not
+	 * making a mistake, so it opens the dialog rather than refusing. */
+	if (!config().scene_recording.enabled || config().scene_recording.scene.empty()) {
+		setUpRecording();
+		return;
+	}
+
+	if (!scene_recording_start()) {
+		setNotice(tr("The recording would not start. Check the scene still exists and "
+			     "there is room on the drive; the OBS log has the reason."),
+			  true);
+	}
+
+	refreshRecording();
+}
+
+/* The one line of this that anyone reads mid-stream: is it recording, and for
+ * how long. */
+void MultistreamDock::refreshRecording()
+{
+	const SceneRecordingStatus status = scene_recording_status();
+	const SceneRecording &settings = config().scene_recording;
+
+	QColor ink = color::muted();
+	QString text;
+
+	if (status.running) {
+		ink = color::ok();
+		text = tr("Recording %1 - %2, %3")
+			       .arg(QString::fromStdString(status.scene))
+			       .arg(short_uptime(status.elapsed_sec))
+			       .arg(short_size(status.bytes));
+	} else if (!status.error.empty()) {
+		ink = color::danger();
+		text = tr("Recording stopped: %1").arg(QString::fromStdString(status.error));
+	} else if (!scene_recording_supported()) {
+		text = tr("Recording a second scene needs OBS 31.1");
+	} else if (!settings.enabled || settings.scene.empty()) {
+		text = tr("Record one scene while you stream another");
+	} else if (settings.with_stream) {
+		text = tr("Ready to record %1 when you go live")
+			       .arg(QString::fromStdString(settings.scene));
+	} else {
+		text = tr("Ready to record %1").arg(QString::fromStdString(settings.scene));
+	}
+
+	recordingState_->setText(text);
+	recordingState_->setToolTip(status.file.empty() ? QString()
+						       : QString::fromStdString(status.file));
+
+	/* A stylesheet rather than a palette: OBS themes are stylesheets, and a
+	 * stylesheet beats a palette, so setting the palette here changes nothing
+	 * on any theme anybody actually uses. */
+	recordingState_->setStyleSheet(QStringLiteral("color: %1;").arg(ink.name()));
+
+	recordingToggle_->setText(status.running ? tr("Stop") : tr("Start"));
+	recordingToggle_->setEnabled(scene_recording_supported());
+	recordingSetUp_->setEnabled(scene_recording_supported());
 }
 
 void MultistreamDock::showOptions()
@@ -884,6 +1215,8 @@ static QString uptimeText(int seconds)
 
 void MultistreamDock::refreshStatuses()
 {
+	refreshRecording();
+
 	const std::vector<OutputStatus> statuses = output_statuses();
 
 	for (int row = 0; row < table_->rowCount(); row++) {

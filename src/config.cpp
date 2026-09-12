@@ -201,6 +201,36 @@ void load_config()
 
 	g_config.canvases_introduced = obs_data_get_bool(data, "canvases_introduced");
 
+	g_config.scene_recording = SceneRecording();
+	obs_data_t *recording = obs_data_get_obj(data, "scene_recording");
+
+	if (recording) {
+		obs_data_set_default_bool(recording, "with_stream", true);
+		obs_data_set_default_int(recording, "video_bitrate", 8000);
+		obs_data_set_default_string(recording, "format", "mkv");
+		obs_data_set_default_int(recording, "audio_track", 1);
+
+		g_config.scene_recording.enabled = obs_data_get_bool(recording, "enabled");
+		g_config.scene_recording.scene = obs_data_get_string(recording, "scene");
+		g_config.scene_recording.folder = obs_data_get_string(recording, "folder");
+		g_config.scene_recording.with_stream = obs_data_get_bool(recording, "with_stream");
+		g_config.scene_recording.video_bitrate =
+			static_cast<int>(obs_data_get_int(recording, "video_bitrate"));
+		g_config.scene_recording.encoder_id = obs_data_get_string(recording, "encoder_id");
+		g_config.scene_recording.format = obs_data_get_string(recording, "format");
+		g_config.scene_recording.audio_track =
+			static_cast<int>(obs_data_get_int(recording, "audio_track"));
+
+		/* A track outside OBS's six would be asked of the audio encoder and
+		 * quietly produce a recording with no sound. */
+		if (g_config.scene_recording.audio_track < 1 ||
+		    g_config.scene_recording.audio_track > 6) {
+			g_config.scene_recording.audio_track = 1;
+		}
+
+		obs_data_release(recording);
+	}
+
 	g_config.vertical_sources.clear();
 	obs_data_array_t *sources = obs_data_get_array(data, "vertical_sources");
 
@@ -319,6 +349,18 @@ void save_config()
 	obs_data_array_release(sources);
 
 	obs_data_set_bool(data, "canvases_introduced", g_config.canvases_introduced);
+
+	obs_data_t *recording = obs_data_create();
+	obs_data_set_bool(recording, "enabled", g_config.scene_recording.enabled);
+	obs_data_set_string(recording, "scene", g_config.scene_recording.scene.c_str());
+	obs_data_set_string(recording, "folder", g_config.scene_recording.folder.c_str());
+	obs_data_set_bool(recording, "with_stream", g_config.scene_recording.with_stream);
+	obs_data_set_int(recording, "video_bitrate", g_config.scene_recording.video_bitrate);
+	obs_data_set_string(recording, "encoder_id", g_config.scene_recording.encoder_id.c_str());
+	obs_data_set_string(recording, "format", g_config.scene_recording.format.c_str());
+	obs_data_set_int(recording, "audio_track", g_config.scene_recording.audio_track);
+	obs_data_set_obj(data, "scene_recording", recording);
+	obs_data_release(recording);
 
 	obs_data_array_t *array = obs_data_array_create();
 

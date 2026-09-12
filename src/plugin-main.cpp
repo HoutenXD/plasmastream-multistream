@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "vertical.hpp"
 #include "http.hpp"
 #include "outputs.hpp"
+#include "scenerec.hpp"
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
@@ -37,17 +38,41 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 	switch (event) {
 	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
 		plasmastream::start_outputs();
+
+		/* Off unless somebody asked for it. Whoever set up a clean recording
+		 * scene wants the clean copy of the broadcast without having to
+		 * remember to press a second button. */
+		if (plasmastream::config().scene_recording.with_stream) {
+			plasmastream::scene_recording_start();
+		}
+
 		break;
 
 	/* STOPPING, not STOPPED: by the time OBS says STOPPED the main output has
 	 * torn down the encoders these are still holding. */
 	case OBS_FRONTEND_EVENT_STREAMING_STOPPING:
 		plasmastream::stop_outputs();
+
+		if (plasmastream::config().scene_recording.with_stream) {
+			plasmastream::scene_recording_stop();
+		}
+
 		break;
 
 	/* STOPPING never arrives if OBS is closed mid-stream. */
 	case OBS_FRONTEND_EVENT_EXIT:
 		plasmastream::stop_outputs();
+
+		/* Unconditionally, unlike above: a recording started by hand is still
+		 * an open file, and closing OBS should not be the thing that loses it. */
+		plasmastream::scene_recording_stop();
+		break;
+
+	/* The scene being recorded is about to stop existing. Better to close the
+	 * file here than to keep writing a picture of nothing. */
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING:
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP:
+		plasmastream::scene_recording_stop();
 		break;
 
 	/* The vertical frame renders whatever is on program, so it has to be told
@@ -99,6 +124,7 @@ void obs_module_unload(void)
 	/* Before libobs tears the graphics subsystem down, since the canvas lives
 	 * in it. */
 	plasmastream::vertical_shutdown();
+	plasmastream::scene_recording_shutdown();
 
 	obs_log(LOG_INFO, "unloaded");
 }
