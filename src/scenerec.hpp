@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace plasmastream {
 
@@ -78,6 +79,19 @@ SceneRecordingStatus scene_recording_status();
  * where there are no canvases to record. */
 bool scene_recording_supported();
 
+/* Sources inside a scene whose sound would reach the stream if this recorded it.
+ *
+ * Recording a scene means running it, and a running source makes noise. For the
+ * picture that is the entire point; for the audio it is a surprise, and the
+ * worst kind, because you find out from somebody watching.
+ *
+ * Only the ones that would actually be heard: muted sources are left out, and so
+ * are sources kept off the track the stream is sending, since moving them off it
+ * is exactly the fix. Your microphone and desktop audio are left out too. They
+ * live in OBS's own channels rather than in any scene, so they are already on
+ * the stream and have nothing to do with this. */
+std::vector<std::string> scene_audio_reaching_stream(const std::string &scene);
+
 /* Borrowed, for a preview. Null unless a recording is running. */
 obs_canvas_t *scene_recording_canvas();
 
@@ -92,6 +106,7 @@ inline bool scene_recording_active() { return false; }
 inline std::string scene_recording_file() { return {}; }
 inline SceneRecordingStatus scene_recording_status() { return {}; }
 inline bool scene_recording_supported() { return false; }
+inline std::vector<std::string> scene_audio_reaching_stream(const std::string &) { return {}; }
 inline void scene_recording_shutdown() {}
 
 #endif

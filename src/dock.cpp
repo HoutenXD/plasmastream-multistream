@@ -824,6 +824,43 @@ void MultistreamDock::setUpRecording()
 	track->setValue(settings.audio_track);
 	track->setPrefix(tr("Track "));
 
+	/* Recording a scene runs it, and a running source makes noise. For the
+	 * picture that is the whole point; for the audio it is a surprise, and one
+	 * people find out about from somebody watching. So it is said here, with
+	 * the names, before it can happen. */
+	auto *leak = new QLabel(&dialog);
+	leak->setWordWrap(true);
+	leak->setStyleSheet(QStringLiteral("color: %1;").arg(color::warn().name()));
+
+	const auto checkAudio = [=]() {
+		const std::vector<std::string> heard =
+			scene_audio_reaching_stream(scene->currentText().toStdString());
+
+		if (heard.empty() || !enabled->isChecked()) {
+			leak->clear();
+			leak->setVisible(false);
+			return;
+		}
+
+		QStringList names;
+
+		for (const std::string &name : heard) {
+			names.append(QString::fromStdString(name));
+		}
+
+		leak->setText(
+			tr("%1 has sound in it: %2. Recording this scene makes it play, and it "
+			   "will go out on your stream as well. To keep it off the stream, move "
+			   "it to an audio track of its own in OBS, then set Audio below to that "
+			   "track.")
+				.arg(scene->currentText())
+				.arg(names.join(tr(", "))));
+
+		leak->setVisible(true);
+	};
+
+	connect(scene, &QComboBox::currentTextChanged, &dialog, checkAudio);
+
 	auto *note = new QLabel(
 		tr("This records a second picture of its own, so it costs a second encode. "
 		   "The scene you pick runs whether or not it is the one on screen, which is "
@@ -844,6 +881,7 @@ void MultistreamDock::setUpRecording()
 	form->addRow(tr("Quality"), bitrate);
 	form->addRow(tr("Encoder"), encoder);
 	form->addRow(tr("Audio"), track);
+	form->addRow(QString(), leak);
 
 	/* Everything below the first box only means something once it is ticked. */
 	const auto followEnabled = [=]() {
@@ -860,7 +898,9 @@ void MultistreamDock::setUpRecording()
 	};
 
 	connect(enabled, &QCheckBox::toggled, &dialog, followEnabled);
+	connect(enabled, &QCheckBox::toggled, &dialog, checkAudio);
 	followEnabled();
+	checkAudio();
 
 	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
 					     &dialog);
