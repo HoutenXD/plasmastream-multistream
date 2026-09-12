@@ -73,6 +73,24 @@ reconnected. The bitrate is measured from bytes sent, not read back from the
 setting, because the gap between the two is the whole question when something
 starts dropping.
 
+### Recording a different scene
+
+OBS records what is on program, so today a stream scene carrying a chat box and
+alerts and a clean scene for the video are a choice between two things. This
+records the one you are not showing.
+
+Press **Record a scene** in the dock, pick the scene, and it runs whenever you
+go live. The scene you pick is held active while it records, which is what makes
+its sources run even though nobody is watching it, and it is recorded at your
+stream's resolution into the folder OBS already records to, with the filename
+format you already set. It does not touch OBS's own Start Recording button;
+both can run at the same time.
+
+It encodes separately, for the same reason vertical does, so it costs one more
+encode. Bitrate, encoder, container and which of OBS's six audio tracks to take
+are all settable. mkv is the default because it survives a crash with the
+footage intact.
+
 ### Twitch Enhanced Broadcasting
 
 If your main stream is using it, OBS is producing a ladder of several encodings
@@ -92,6 +110,9 @@ cannot be pulled out of it and rearranged on its own, because on this canvas the
 whole wide composition is a single element.
 
 If that is what you need, Aitum Vertical does it and is free.
+
+There is also no replay buffer on either the vertical canvas or the scene
+recording, and no hotkeys anywhere: everything is driven from the docks.
 
 ## Your stream keys stay on your computer
 

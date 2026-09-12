@@ -51,6 +51,13 @@ private slots:
 	void showOptions();
 	void refreshStatuses();
 
+	/* Record one scene while a different one goes out. Its own settings dialog
+	 * rather than a page of the options one, because it is a feature somebody
+	 * either uses or has never heard of, and burying it under Options is how
+	 * the second group stays in it. */
+	void setUpRecording();
+	void toggleRecording();
+
 private:
 	void rebuildTable();
 	void updateEmptyState();
@@ -67,6 +74,13 @@ private:
 	QPushButton *keyButton_ = nullptr;
 	QPushButton *options_ = nullptr;
 	QLabel *notice_ = nullptr;
+
+	void refreshRecording();
+
+	QLabel *recordingState_ = nullptr;
+	QPushButton *recordingSetUp_ = nullptr;
+	QPushButton *recordingToggle_ = nullptr;
+
 	QTimer *poll_ = nullptr;
 };
 

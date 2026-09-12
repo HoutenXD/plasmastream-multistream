@@ -63,6 +63,8 @@ target_sources(
     src/outputs.hpp
     src/preview.cpp
     src/preview.hpp
+    src/scenerec.cpp
+    src/scenerec.hpp
     src/vertical.cpp
     src/vertical.hpp
 )

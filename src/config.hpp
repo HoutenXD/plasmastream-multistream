@@ -69,6 +69,37 @@ struct VerticalSource {
 	bool visible = true;
 };
 
+/* Record one scene while streaming another.
+ *
+ * A stream scene carries the chat box and the alerts; a recording scene carries
+ * none of it, because none of that belongs in a video somebody watches next
+ * week. OBS records the programme, so without this you choose one. */
+struct SceneRecording {
+	bool enabled = false;
+
+	/* The scene to record. Empty means nothing has been picked yet. */
+	std::string scene;
+
+	/* Where the files go. Empty means the user's Videos folder. */
+	std::string folder;
+
+	/* Start and stop it with the stream, which is what somebody wants who set
+	 * this up to get a clean copy of a broadcast. */
+	bool with_stream = true;
+
+	int video_bitrate = 8000;
+	/* Empty means the same kind of encoder the main stream is using. */
+	std::string encoder_id;
+
+	/* Container. mkv survives a crash with the footage intact, which is why OBS
+	 * recommends it; mp4 goes straight into an editor. */
+	std::string format = "mkv";
+
+	/* Which of OBS's six audio tracks to record, 1 based. Track 1 is what the
+	 * stream hears; a different one is how people keep music off the recording. */
+	int audio_track = 1;
+};
+
 struct Destination {
 	std::string id;
 	std::string name;
@@ -122,6 +153,9 @@ struct Config {
 
 	/* Layered over the programme block, bottom of the list first. */
 	std::vector<VerticalSource> vertical_sources;
+
+	/* Record a scene other than the one going out. */
+	SceneRecording scene_recording;
 
 	/* Whether the Canvases dock has ever been shown. OBS starts every dock
 	 * hidden and most people never find the Docks menu, so it gets opened once
