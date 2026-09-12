@@ -38,6 +38,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "../../src/appearance.hpp"
 
+#include <cstdio>
+
 #include <QApplication>
 #include <QHeaderView>
 #include <QPixmap>
@@ -98,20 +100,17 @@ int main(int argc, char **argv)
 	table->setHorizontalHeaderLabels({"On", "Destination", "Where", "State"});
 	table->setItemDelegate(new RowDelegate(table));
 
+	/* The dock's own setup, not a copy of it, so this can actually catch the
+	 * columns going wrong. */
+	set_up_destination_columns(table);
+
 	QHeaderView *header = table->horizontalHeader();
-	header->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-	header->setSectionResizeMode(1, QHeaderView::Stretch);
-	header->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-	header->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-	header->setStretchLastSection(false);
-	header->setHighlightSections(false);
 
 	table->verticalHeader()->setVisible(false);
 	table->setSelectionBehavior(QAbstractItemView::SelectRows);
 	table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 	table->setWordWrap(false);
 	table->setAlternatingRowColors(true);
-	table->setTextElideMode(Qt::ElideRight);
 
 	for (int row = 0; row < static_cast<int>(std::size(ROWS)); row++) {
 		const Row &r = ROWS[static_cast<size_t>(row)];
@@ -132,7 +131,15 @@ int main(int argc, char **argv)
 		table->setItem(row, 3, state);
 	}
 
-	table->resize(880, 40 + 27 * static_cast<int>(std::size(ROWS)));
+	int width = 880;
+
+	for (int i = 1; i < argc - 1; i++) {
+		if (QString::fromUtf8(argv[i]) == QLatin1String("--width")) {
+			width = QString::fromUtf8(argv[i + 1]).toInt();
+		}
+	}
+
+	table->resize(width, 40 + 27 * static_cast<int>(std::size(ROWS)));
 
 	/* Laid out but never put on screen. The obvious alternative, the offscreen
 	 * platform plugin, is not in the Qt that obs-deps ships (it offers direct2d,
@@ -144,6 +151,23 @@ int main(int argc, char **argv)
 	/* One turn of the loop so the layout settles before the grab; without it
 	 * the columns are still at their construction widths. */
 	QApplication::processEvents();
+
+	lay_out_destination_columns(table);
+	QApplication::processEvents();
+
+	/* What each column actually got, against what it asked for. A column
+	 * narrower than its hint is a column that is eliding, which is the whole
+	 * question when somebody says the dock truncates. */
+	const char *names[] = {"On", "Destination", "Where", "State"};
+	std::printf("table %d wide, viewport %d\n", table->width(), table->viewport()->width());
+
+	for (int column = 0; column < 4; column++) {
+		const int got = table->columnWidth(column);
+		const int wants = header->sectionSizeHint(column);
+
+		std::printf("  %-12s got %4d  wants %4d  %s\n", names[column], got, wants,
+			    got < wants ? "ELIDING" : "ok");
+	}
 
 	const QString out = argc > 1 ? QString::fromUtf8(argv[1]) : QStringLiteral("dock.png");
 	table->grab().save(out);

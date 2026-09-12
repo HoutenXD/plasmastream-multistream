@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 class QLabel;
 class QPushButton;
+class QResizeEvent;
 class QTableWidget;
 class QTimer;
 
@@ -41,6 +42,11 @@ public:
 	/* QDockWidget takes its opening size from this, and a QTableWidget asks for
 	 * very little: without it the dock opens too narrow to read its own headers. */
 	QSize sizeHint() const override;
+
+protected:
+	/* Re-shares the table's width between its columns. Dragging the dock
+	 * narrow used to push the two right-hand columns off the edge entirely. */
+	void resizeEvent(QResizeEvent *event) override;
 
 private slots:
 	void addDestination();

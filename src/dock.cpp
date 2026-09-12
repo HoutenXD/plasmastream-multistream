@@ -454,16 +454,7 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	// doing" is the thing somebody actually glances at mid-stream.
 	table_->setItemDelegate(new RowDelegate(table_));
 
-	// Every column needs a mode. Leave one out and it keeps Qt's 100px default,
-	// which in a narrow dock squeezes the columns that matter until their own
-	// headers truncate.
-	QHeaderView *header = table_->horizontalHeader();
-	header->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-	header->setSectionResizeMode(1, QHeaderView::Stretch);
-	header->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-	header->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-	header->setStretchLastSection(false);
-	header->setHighlightSections(false);
+	set_up_destination_columns(table_);
 
 	table_->verticalHeader()->setVisible(false);
 	table_->verticalHeader()->setDefaultSectionSize(24);
@@ -472,10 +463,6 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
 	table_->setWordWrap(false);
 	table_->setAlternatingRowColors(true);
-
-	// Elide rather than scroll sideways.
-	table_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-	table_->setTextElideMode(Qt::ElideRight);
 
 	// The first thing everyone sees, so it should say what to do.
 	empty_ = new QLabel(tr("No destinations yet.\n\nPress Add to send this stream somewhere "
@@ -553,6 +540,16 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	rebuildTable();
 	updateButtons();
 	refreshRecording();
+	lay_out_destination_columns(table_);
+}
+
+void MultistreamDock::resizeEvent(QResizeEvent *event)
+{
+	QWidget::resizeEvent(event);
+
+	/* The table is inside a layout, so it has not been given its new width yet
+	 * when this runs. Asking for the share now would divide up the old one. */
+	QTimer::singleShot(0, this, [this]() { lay_out_destination_columns(table_); });
 }
 
 QSize MultistreamDock::sizeHint() const
