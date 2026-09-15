@@ -72,21 +72,77 @@ struct Recording {
 Recording g_rec;
 std::mutex g_mutex;
 
-/* What the main stream encodes with, so this defaults to the same kind rather
- * than to x264 on a machine set up for NVENC. */
-const char *main_encoder_kind()
+/* The codec an encoder makes, like "h264", or empty for an id OBS does not know. */
+std::string codec_of(const char *id)
 {
-	obs_output_t *stream = obs_frontend_get_streaming_output();
+	const char *codec = id ? obs_get_encoder_codec(id) : nullptr;
+	return codec ? codec : "";
+}
 
-	if (!stream) {
-		return "obs_x264";
+/* Which hardware an encoder id belongs to, so an H.264 encoder can be found on
+ * the same one. Null for software encoders. */
+const char *hardware_of(const char *id)
+{
+	static const char *const families[] = {"nvenc", "amf", "qsv", "videotoolbox"};
+
+	for (const char *family : families) {
+		if (strstr(id, family)) {
+			return family;
+		}
 	}
 
-	obs_encoder_t *video = obs_output_get_video_encoder(stream);
-	const char *id = video ? obs_encoder_get_id(video) : "obs_x264";
+	return nullptr;
+}
 
-	obs_output_release(stream);
-	return id;
+/* What the recording encodes with when nobody picked an encoder.
+ *
+ * The stream's own kind of encoder, so it lands on the same hardware rather than
+ * on x264 on a machine set up for NVENC. But always H.264. It used to copy the
+ * stream's CODEC too, and a stream in HEVC or AV1, which YouTube and Twitch's
+ * Enhanced Broadcasting both take, made a recording that Windows' own players
+ * refuse to open without an extension from the Microsoft Store: the file had the
+ * right length and size and would not play. The dialog calls mp4 the one that
+ * "opens anywhere", and only H.264 does.
+ *
+ * Somebody who picks HEVC or AV1 by name still gets it. */
+std::string default_encoder_kind()
+{
+	std::string stream_id = "obs_x264";
+	obs_output_t *stream = obs_frontend_get_streaming_output();
+
+	if (stream) {
+		obs_encoder_t *video = obs_output_get_video_encoder(stream);
+
+		if (video) {
+			stream_id = obs_encoder_get_id(video);
+		}
+
+		obs_output_release(stream);
+	}
+
+	if (codec_of(stream_id.c_str()) == "h264") {
+		return stream_id;
+	}
+
+	const char *hardware = hardware_of(stream_id.c_str());
+
+	if (hardware) {
+		const char *candidate = nullptr;
+
+		for (size_t i = 0; obs_enum_encoder_types(i, &candidate); i++) {
+			/* Deprecated ids linger for old profiles, and internal ones are the
+			 * fallbacks OBS switches to by itself; neither is one to choose. */
+			const uint32_t unwanted = OBS_ENCODER_CAP_DEPRECATED | OBS_ENCODER_CAP_INTERNAL;
+
+			if (obs_get_encoder_type(candidate) == OBS_ENCODER_VIDEO &&
+			    codec_of(candidate) == "h264" && strstr(candidate, hardware) &&
+			    (obs_get_encoder_caps(candidate) & unwanted) == 0) {
+				return candidate;
+			}
+		}
+	}
+
+	return "obs_x264";
 }
 
 void on_output_stopped(void *, calldata_t *data);
@@ -203,6 +259,19 @@ bool build_canvas(const std::string &scene_name)
 	if (!obs_get_video_info(&ovi)) {
 		obs_source_release(scene);
 		return false;
+	}
+
+	/* Eight bit 4:2:0, whatever OBS itself is set to. OBS set to I444 or to ten
+	 * bit makes H.264 in High 4:4:4 or High 10, which is a real format and one
+	 * Windows' own players cannot decode, so the file would not open. This canvas
+	 * is ours and has its own format, so the main output is left as it is. An HDR
+	 * setup records in SDR here for the same reason. */
+	if (ovi.output_format != VIDEO_FORMAT_NV12 && ovi.output_format != VIDEO_FORMAT_I420) {
+		ovi.output_format = VIDEO_FORMAT_NV12;
+	}
+
+	if (ovi.colorspace == VIDEO_CS_2100_PQ || ovi.colorspace == VIDEO_CS_2100_HLG) {
+		ovi.colorspace = VIDEO_CS_709;
 	}
 
 	/* Same size as the stream. This is a different COMPOSITION, not a
@@ -351,10 +420,10 @@ bool scene_recording_start()
 	 * different size from one of a game. */
 	obs_data_set_string(encoder_settings, "rate_control", "CBR");
 
-	const char *kind = settings.encoder_id.empty() ? main_encoder_kind()
-						       : settings.encoder_id.c_str();
+	const std::string kind = settings.encoder_id.empty() ? default_encoder_kind()
+							     : settings.encoder_id;
 
-	g_rec.video = obs_video_encoder_create(kind, "PlasmaStream recording video",
+	g_rec.video = obs_video_encoder_create(kind.c_str(), "PlasmaStream recording video",
 					       encoder_settings, nullptr);
 	obs_data_release(encoder_settings);
 
@@ -410,8 +479,10 @@ bool scene_recording_start()
 	g_rec.started_ns = os_gettime_ns();
 	g_rec.error.clear();
 
-	blog(LOG_INFO, "[plasmastream] recording scene '%s' to %s", settings.scene.c_str(),
-	     g_rec.file.c_str());
+	/* The encoder goes in the log as well, because "the file will not open" is
+	 * almost always a question about the codec, and this line answers it. */
+	blog(LOG_INFO, "[plasmastream] recording scene '%s' to %s with %s (%s)", settings.scene.c_str(),
+	     g_rec.file.c_str(), kind.c_str(), codec_of(kind.c_str()).c_str());
 
 
 	return true;
