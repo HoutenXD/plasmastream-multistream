@@ -855,39 +855,46 @@ void MultistreamDock::setUpRecording()
 	track->setValue(settings.audio_track);
 	track->setPrefix(tr("Track "));
 
-	/* Recording a scene runs it, and a running source makes noise. For the
-	 * picture that is the whole point; for the audio it is a surprise, and one
-	 * people find out about from somebody watching. So it is said here, with
-	 * the names, before it can happen. */
-	auto *leak = new QLabel(&dialog);
-	leak->setWordWrap(true);
-	leak->setStyleSheet(QStringLiteral("color: %1;").arg(color::warn().name()));
+	/* The recording's sound is the stream's mix, so a sound that is only in the
+	 * recorded scene is silent in the file. That is found out after the stream,
+	 * from a video with no game audio in it, so it is said here, with the names,
+	 * before it can happen. A source that is on another scene as well is fine
+	 * and is not mentioned. See scene_audio_missing_from_recording. */
+	auto *silent = new QLabel(&dialog);
+	silent->setWordWrap(true);
+	silent->setStyleSheet(QStringLiteral("color: %1;").arg(color::warn().name()));
 
 	const auto checkAudio = [=]() {
-		const std::vector<std::string> heard =
-			scene_audio_reaching_stream(scene->currentText().toStdString());
+		const std::vector<std::string> missing =
+			scene_audio_missing_from_recording(scene->currentText().toStdString());
 
-		if (heard.empty() || !enabled->isChecked()) {
-			leak->clear();
-			leak->setVisible(false);
+		if (missing.empty() || !enabled->isChecked()) {
+			silent->clear();
+			silent->setVisible(false);
 			return;
 		}
 
 		QStringList names;
 
-		for (const std::string &name : heard) {
+		for (const std::string &name : missing) {
 			names.append(QString::fromStdString(name));
 		}
 
-		leak->setText(
-			tr("%1 has sound in it: %2. Recording this scene makes it play, and it "
-			   "will go out on your stream as well. To keep it off the stream, move "
-			   "it to an audio track of its own in OBS, then set Audio below to that "
-			   "track.")
-				.arg(scene->currentText())
-				.arg(names.join(tr(", "))));
+		const QString last = names.takeLast();
+		const QString list = names.isEmpty() ? last : tr("%1 and %2").arg(names.join(tr(", ")), last);
+		const bool one = names.isEmpty();
 
-		leak->setVisible(true);
+		const QString sentence =
+			one ? tr("%1 will be silent in the recording. It is only in \"%2\", and the "
+				 "recording's sound is your stream's mix, which only hears the scene "
+				 "you are streaming. Add it to that scene too.")
+			    : tr("%1 will be silent in the recording. They are only in \"%2\", and the "
+				 "recording's sound is your stream's mix, which only hears the scene "
+				 "you are streaming. Add them to that scene too.");
+
+		silent->setText(sentence.arg(list, scene->currentText()));
+
+		silent->setVisible(true);
 	};
 
 	connect(scene, &QComboBox::currentTextChanged, &dialog, checkAudio);
@@ -896,8 +903,11 @@ void MultistreamDock::setUpRecording()
 		tr("This records a second picture of its own, so it costs a second encode. "
 		   "The scene you pick runs whether or not it is the one on screen, which is "
 		   "the point: stream the scene with your chat box and alerts, keep the clean "
-		   "one for the video.\n\nIt does not touch OBS's own Start Recording button. "
-		   "Both can run at once."),
+		   "one for the video.\n\nThe sound is your stream's mix on the Audio track, "
+		   "not the scene's own, so it follows whatever you are streaming. To keep "
+		   "alert sounds out of the video, untick that track for them in OBS's "
+		   "Advanced Audio Properties.\n\nIt does not touch OBS's own Start Recording "
+		   "button. Both can run at once."),
 		&dialog);
 	note->setWordWrap(true);
 
@@ -913,7 +923,7 @@ void MultistreamDock::setUpRecording()
 	form->addRow(tr("Encoder"), encoder);
 	form->addRow(QString(), codecNote);
 	form->addRow(tr("Audio"), track);
-	form->addRow(QString(), leak);
+	form->addRow(QString(), silent);
 
 	/* Everything below the first box only means something once it is ticked. */
 	const auto followEnabled = [=]() {

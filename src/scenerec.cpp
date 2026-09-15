@@ -484,6 +484,13 @@ bool scene_recording_start()
 	blog(LOG_INFO, "[plasmastream] recording scene '%s' to %s with %s (%s)", settings.scene.c_str(),
 	     g_rec.file.c_str(), kind.c_str(), codec_of(kind.c_str()).c_str());
 
+	/* And every sound that will be missing from it, for the same reason: a video
+	 * with no game audio is found out long after the stream, and the log is where
+	 * anybody looks first. See scene_audio_missing_from_recording. */
+	for (const std::string &name : scene_audio_missing_from_recording(settings.scene)) {
+		blog(LOG_WARNING, "[plasmastream] '%s' is only in scene '%s', so it will be silent in the recording",
+		     name.c_str(), settings.scene.c_str());
+	}
 
 	return true;
 }
@@ -550,52 +557,33 @@ bool scene_recording_supported()
 
 namespace {
 
-/* Which of OBS's six tracks the stream is sending. Simple output mode is always
- * the first; advanced mode is wherever it was pointed. */
-int streaming_track()
-{
-	config_t *profile = obs_frontend_get_profile_config();
-
-	if (!profile) {
-		return 1;
-	}
-
-	const char *mode = config_get_string(profile, "Output", "Mode");
-
-	if (!mode || strcmp(mode, "Advanced") != 0) {
-		return 1;
-	}
-
-	const int track = static_cast<int>(config_get_int(profile, "AdvOut", "TrackIndex"));
-	return track >= 1 && track <= 6 ? track : 1;
-}
-
-struct AudioHunt {
-	/* Bit of the track the stream is on. A source not on it cannot be heard
-	 * there however loud it is. */
-	uint32_t stream_track_bit = 1;
-
-	/* The microphone and desktop audio, which are on the stream already and so
-	 * are not news. */
+/* Every source with sound that a scene would play, reached through nested scenes
+ * and groups, each once. The sources OBS mixes on its own (the microphone and
+ * desktop audio) are never counted: they are in the mix whatever scene is live. */
+struct SoundWalk {
 	std::vector<obs_source_t *> globals;
+	std::vector<obs_source_t *> found;
 
-	std::vector<std::string> found;
+	/* For the recorded scene: a hidden or muted source is not expected to make a
+	 * sound, so it is not news. For every other scene both are live switches, and
+	 * being on the scene at all is what decides whether it can ever be heard. */
+	bool audible_only = true;
 };
 
-bool hunt_item(obs_scene_t *, obs_sceneitem_t *item, void *param);
+bool walk_item(obs_scene_t *, obs_sceneitem_t *item, void *param);
 
-void hunt_source(obs_source_t *source, AudioHunt &hunt)
+void walk_source(obs_source_t *source, SoundWalk &walk)
 {
 	if (!source) {
 		return;
 	}
 
-	/* A scene inside a scene is a real thing people build, and its audio
-	 * reaches the stream by the same route. */
+	/* A scene inside a scene is a real thing people build, and its sources are
+	 * live whenever the outer one is. */
 	obs_scene_t *nested = obs_scene_from_source(source);
 
 	if (nested) {
-		obs_scene_enum_items(nested, hunt_item, &hunt);
+		obs_scene_enum_items(nested, walk_item, &walk);
 		return;
 	}
 
@@ -603,93 +591,116 @@ void hunt_source(obs_source_t *source, AudioHunt &hunt)
 		return;
 	}
 
-	if (obs_source_muted(source)) {
+	if (walk.audible_only && obs_source_muted(source)) {
 		return;
 	}
 
-	if ((obs_source_get_audio_mixers(source) & hunt.stream_track_bit) == 0) {
-		return;
-	}
-
-	for (obs_source_t *global : hunt.globals) {
+	for (obs_source_t *global : walk.globals) {
 		if (global == source) {
 			return;
 		}
 	}
 
-	const char *name = obs_source_get_name(source);
-
-	if (!name || !*name) {
-		return;
-	}
-
-	/* One source can sit in a scene more than once, and naming it twice reads
-	 * as two problems. */
-	for (const std::string &already : hunt.found) {
-		if (already == name) {
+	for (obs_source_t *already : walk.found) {
+		if (already == source) {
 			return;
 		}
 	}
 
-	hunt.found.push_back(name);
+	walk.found.push_back(source);
 }
 
-bool hunt_item(obs_scene_t *, obs_sceneitem_t *item, void *param)
+bool walk_item(obs_scene_t *, obs_sceneitem_t *item, void *param)
 {
-	auto &hunt = *static_cast<AudioHunt *>(param);
+	auto &walk = *static_cast<SoundWalk *>(param);
 
-	/* A hidden source is not rendered and not heard. */
-	if (!obs_sceneitem_visible(item)) {
+	if (walk.audible_only && !obs_sceneitem_visible(item)) {
 		return true;
 	}
 
 	if (obs_sceneitem_is_group(item)) {
-		obs_sceneitem_group_enum_items(item, hunt_item, &hunt);
+		obs_sceneitem_group_enum_items(item, walk_item, &walk);
 		return true;
 	}
 
-	hunt_source(obs_sceneitem_get_source(item), hunt);
+	walk_source(obs_sceneitem_get_source(item), walk);
 	return true;
 }
 
 } // namespace
 
-std::vector<std::string> scene_audio_reaching_stream(const std::string &scene_name)
+std::vector<std::string> scene_audio_missing_from_recording(const std::string &scene_name)
 {
-	obs_source_t *source = obs_get_source_by_name(scene_name.c_str());
+	obs_source_t *recorded = obs_get_source_by_name(scene_name.c_str());
 
-	if (!source) {
+	if (!recorded) {
 		return {};
 	}
 
-	obs_scene_t *scene = obs_scene_from_source(source);
+	obs_scene_t *scene = obs_scene_from_source(recorded);
 
 	if (!scene) {
-		obs_source_release(source);
+		obs_source_release(recorded);
 		return {};
 	}
 
-	AudioHunt hunt;
-	hunt.stream_track_bit = 1u << (streaming_track() - 1);
+	SoundWalk here;
 
 	/* Channel 0 is whatever is on programme; 1 to 5 are the audio devices OBS
-	 * mixes in on their own, which is why they are not a surprise. */
+	 * mixes in on their own. */
 	for (uint32_t channel = 1; channel <= 5; channel++) {
 		obs_source_t *global = obs_get_output_source(channel);
 
 		if (global) {
-			hunt.globals.push_back(global);
+			here.globals.push_back(global);
 		}
 	}
 
-	obs_scene_enum_items(scene, hunt_item, &hunt);
+	obs_scene_enum_items(scene, walk_item, &here);
 
-	for (obs_source_t *global : hunt.globals) {
+	SoundWalk elsewhere;
+	elsewhere.globals = here.globals;
+	elsewhere.audible_only = false;
+
+	obs_frontend_source_list scenes = {};
+	obs_frontend_get_scenes(&scenes);
+
+	for (size_t i = 0; i < scenes.sources.num; i++) {
+		obs_source_t *other = scenes.sources.array[i];
+		obs_scene_t *other_scene = other == recorded ? nullptr : obs_scene_from_source(other);
+
+		if (other_scene) {
+			obs_scene_enum_items(other_scene, walk_item, &elsewhere);
+		}
+	}
+
+	obs_frontend_source_list_free(&scenes);
+
+	std::vector<std::string> missing;
+
+	for (obs_source_t *source : here.found) {
+		bool elsewhere_too = false;
+
+		for (obs_source_t *other : elsewhere.found) {
+			if (other == source) {
+				elsewhere_too = true;
+				break;
+			}
+		}
+
+		const char *name = obs_source_get_name(source);
+
+		if (!elsewhere_too && name && *name) {
+			missing.push_back(name);
+		}
+	}
+
+	for (obs_source_t *global : here.globals) {
 		obs_source_release(global);
 	}
 
-	obs_source_release(source);
-	return hunt.found;
+	obs_source_release(recorded);
+	return missing;
 }
 
 obs_canvas_t *scene_recording_canvas()
