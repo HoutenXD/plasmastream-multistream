@@ -26,6 +26,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "scenerec.hpp"
 #include "vertical.hpp"
 
+#include <cstring>
 #include <thread>
 #include <vector>
 
@@ -806,7 +807,7 @@ void MultistreamDock::setUpRecording()
 	bitrate->setValue(settings.video_bitrate);
 
 	auto *encoder = new QComboBox(&dialog);
-	encoder->addItem(tr("Same kind as my stream"), QString());
+	encoder->addItem(tr("Same hardware as my stream, in H.264"), QString());
 
 	for (const char *id : available_encoders()) {
 		encoder->addItem(QString::fromUtf8(obs_encoder_get_display_name(id)),
@@ -818,6 +819,36 @@ void MultistreamDock::setUpRecording()
 	if (encoderIndex >= 0) {
 		encoder->setCurrentIndex(encoderIndex);
 	}
+
+	/* HEVC and AV1 are real choices with real advantages, so they stay on the
+	 * list. What they cost is said beside them, because the way people find out
+	 * otherwise is a finished recording that will not open. */
+	auto *codecNote = new QLabel(&dialog);
+	codecNote->setWordWrap(true);
+	codecNote->setStyleSheet(QStringLiteral("color: %1;").arg(color::warn().name()));
+
+	const auto checkCodec = [=]() {
+		const QByteArray id = encoder->currentData().toString().toUtf8();
+		const char *codec = id.isEmpty() ? nullptr : obs_get_encoder_codec(id.constData());
+
+		if (!codec || strcmp(codec, "h264") == 0) {
+			codecNote->clear();
+			codecNote->setVisible(false);
+			return;
+		}
+
+		codecNote->setText(
+			tr("This makes %1 files. YouTube takes them, and so do VLC and most "
+			   "editors, but Windows' own Media Player and Movies & TV will not open "
+			   "them without an extension from the Microsoft Store. H.264 opens "
+			   "everywhere.")
+				.arg(strcmp(codec, "hevc") == 0 ? tr("HEVC")
+				     : strcmp(codec, "av1") == 0 ? tr("AV1")
+								 : QString::fromUtf8(codec).toUpper()));
+		codecNote->setVisible(true);
+	};
+
+	connect(encoder, &QComboBox::currentIndexChanged, &dialog, checkCodec);
 
 	auto *track = new QSpinBox(&dialog);
 	track->setRange(1, 6);
@@ -880,6 +911,7 @@ void MultistreamDock::setUpRecording()
 	form->addRow(tr("File type"), format);
 	form->addRow(tr("Quality"), bitrate);
 	form->addRow(tr("Encoder"), encoder);
+	form->addRow(QString(), codecNote);
 	form->addRow(tr("Audio"), track);
 	form->addRow(QString(), leak);
 
@@ -901,6 +933,7 @@ void MultistreamDock::setUpRecording()
 	connect(enabled, &QCheckBox::toggled, &dialog, checkAudio);
 	followEnabled();
 	checkAudio();
+	checkCodec();
 
 	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
 					     &dialog);
