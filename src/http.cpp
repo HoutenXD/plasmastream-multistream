@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <curl/curl.h>
 #include <obs-module.h>
+#include <plugin-support.h>
 
 #include <cstdlib>
 
@@ -44,6 +45,14 @@ void http_init()
 	curl_global_init(CURL_GLOBAL_DEFAULT);
 }
 
+/* "PlasmaStream-Multistream-OBS/1.2.3": the version lets the site's operator
+ * console count which plugin versions are still in use. */
+static const std::string &user_agent()
+{
+	static const std::string agent = std::string("PlasmaStream-Multistream-OBS/") + PLUGIN_VERSION;
+	return agent;
+}
+
 HttpResponse http_get(const std::string &url)
 {
 	HttpResponse response;
@@ -62,7 +71,7 @@ HttpResponse http_get(const std::string &url)
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
 	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buffer);
 	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-	curl_easy_setopt(curl, CURLOPT_USERAGENT, "PlasmaStream-Multistream-OBS");
+	curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent().c_str());
 
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
@@ -107,7 +116,7 @@ HttpResponse http_post_json(const std::string &url, const std::string &json, lon
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
 	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buffer);
-	curl_easy_setopt(curl, CURLOPT_USERAGENT, "PlasmaStream-Multistream-OBS");
+	curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent().c_str());
 
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, timeout_sec < 8 ? timeout_sec : 8L);

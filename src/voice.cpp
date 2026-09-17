@@ -518,6 +518,12 @@ std::string current_token()
 void fetch_website()
 {
 	const std::string token = current_token();
+	std::string model;
+
+	{
+		std::lock_guard<std::mutex> lock(g_status_mutex);
+		model = g_model;
+	}
 
 	if (token.empty()) {
 		std::lock_guard<std::mutex> lock(g_status_mutex);
@@ -525,7 +531,7 @@ void fetch_website()
 		return;
 	}
 
-	const HttpResponse response = http_get(plasmastream_url("/api/plugin/" + token + "/voice"));
+	const HttpResponse response = http_get(plasmastream_url("/api/plugin/" + token + "/voice?model=" + model));
 
 	std::lock_guard<std::mutex> lock(g_status_mutex);
 
