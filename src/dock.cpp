@@ -25,7 +25,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "outputs.hpp"
 #include "scenerec.hpp"
 #include "vertical.hpp"
+#include "voice.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <thread>
 #include <vector>
@@ -493,6 +495,21 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	connect(recordingSetUp_, &QPushButton::clicked, this, &MultistreamDock::setUpRecording);
 	connect(recordingToggle_, &QPushButton::clicked, this, &MultistreamDock::toggleRecording);
 
+	voiceState_ = new QLabel(this);
+	voiceState_->setTextFormat(Qt::PlainText);
+	voiceState_->setWordWrap(true);
+
+	voiceDetail_ = new QLabel(this);
+	voiceDetail_->setTextFormat(Qt::PlainText);
+	voiceDetail_->setWordWrap(true);
+	voiceDetail_->setVisible(false);
+	// Under its row, not centered in whatever height the dock has spare.
+	voiceDetail_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+	voiceDetail_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+
+	voiceSetUp_ = new QPushButton(tr("Voice commands..."), this);
+	connect(voiceSetUp_, &QPushButton::clicked, this, &MultistreamDock::setUpVoice);
+
 	auto *buttons = new QHBoxLayout;
 	buttons->addWidget(add_);
 	buttons->addWidget(edit_);
@@ -516,6 +533,14 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	recordingRow->addWidget(recordingSetUp_);
 	recordingRow->addWidget(recordingToggle_);
 	layout->addLayout(recordingRow);
+
+	layout->addWidget(divider(this));
+
+	auto *voiceRow = new QHBoxLayout;
+	voiceRow->addWidget(voiceState_, 1);
+	voiceRow->addWidget(voiceSetUp_);
+	layout->addLayout(voiceRow);
+	layout->addWidget(voiceDetail_);
 
 	layout->addWidget(notice_);
 
@@ -541,6 +566,7 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	rebuildTable();
 	updateButtons();
 	refreshRecording();
+	refreshVoice();
 	lay_out_destination_columns(table_);
 }
 
@@ -710,6 +736,9 @@ void MultistreamDock::changeToken()
 
 	config().token = read_token(entered);
 	save_config();
+
+	// Voice reads its wake phrase with the same key.
+	voice_apply();
 
 	setNotice(config().token.empty() ? tr("Plugin key cleared.") : tr("Plugin key saved."),
 		  false);
@@ -1049,6 +1078,257 @@ void MultistreamDock::refreshRecording()
 	recordingSetUp_->setEnabled(scene_recording_supported());
 }
 
+namespace {
+
+struct Microphone {
+	QString name;
+	QString uuid;
+	bool is_input = false;
+};
+
+/* Sources a voice command could come from.
+ *
+ * Every source with audio except the ones that capture what the computer PLAYS:
+ * desktop audio and application audio. A viewer's text to speech plays through
+ * those, and a command it could speak is a command any viewer could run. OBS's
+ * Mic/Aux devices are global rather than in a scene, so they are looked up by
+ * channel as well. */
+std::vector<Microphone> microphones()
+{
+	std::vector<Microphone> list;
+
+	const auto consider = [&list](obs_source_t *source) {
+		if (!source || (obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO) == 0 ||
+		    obs_source_get_type(source) != OBS_SOURCE_TYPE_INPUT) {
+			return;
+		}
+
+		const char *id = obs_source_get_unversioned_id(source);
+		const QString kind = QString::fromUtf8(id ? id : "");
+
+		if (kind.contains(QStringLiteral("output_capture")) ||
+		    kind == QStringLiteral("wasapi_process_output_capture") ||
+		    kind == QStringLiteral("sck_audio_capture")) {
+			return;
+		}
+
+		const QString uuid = QString::fromUtf8(obs_source_get_uuid(source));
+
+		for (const Microphone &existing : list) {
+			if (existing.uuid == uuid) {
+				return;
+			}
+		}
+
+		list.push_back({QString::fromUtf8(obs_source_get_name(source)), uuid,
+				kind.contains(QStringLiteral("input_capture"))});
+	};
+
+	for (int channel = 1; channel <= 6; channel++) {
+		obs_source_t *source = obs_get_output_source(channel);
+		consider(source);
+		obs_source_release(source);
+	}
+
+	obs_enum_sources(
+		[](void *param, obs_source_t *source) {
+			(*static_cast<decltype(consider) *>(param))(source);
+			return true;
+		},
+		const_cast<void *>(static_cast<const void *>(&consider)));
+
+	/* Real microphones first, so the default pick is one. */
+	std::stable_sort(list.begin(), list.end(),
+			 [](const Microphone &a, const Microphone &b) { return a.is_input && !b.is_input; });
+
+	return list;
+}
+
+} // namespace
+
+void MultistreamDock::setUpVoice()
+{
+	VoiceConfig settings = config().voice;
+	const VoiceStatus status = voice_status();
+	const std::vector<Microphone> mics = microphones();
+
+	QDialog dialog(this);
+	dialog.setWindowTitle(tr("Voice commands"));
+
+	auto *intro = new QLabel(
+		tr("Say your wake phrase and then one of your phrases, like \"Jarvis, set my game to "
+		   "Hades\", and PlasmaStream runs the command. Your wake phrase and your phrases are set "
+		   "on your PlasmaStream dashboard, under Voice commands.\n\nSpeech is turned into text on "
+		   "this computer. Only the words after your wake phrase are sent to PlasmaStream. It works "
+		   "whether or not you are live, so you can try your phrases before a stream."),
+		&dialog);
+	intro->setWordWrap(true);
+
+	auto *enabled = new QCheckBox(tr("Listen for voice commands"), &dialog);
+	enabled->setChecked(settings.enabled);
+
+	auto *mic = new QComboBox(&dialog);
+
+	for (const Microphone &entry : mics) {
+		mic->addItem(entry.name, entry.uuid);
+	}
+
+	int micIndex = mic->findData(QString::fromStdString(settings.source_uuid));
+
+	if (micIndex < 0) {
+		micIndex = mic->findText(QString::fromStdString(settings.source_name));
+	}
+
+	if (micIndex >= 0) {
+		mic->setCurrentIndex(micIndex);
+	}
+
+	auto *wake = new QCheckBox(status.phrase.empty()
+					   ? tr("Listen for my wake phrase all the time")
+					   : tr("Listen for \"%1\" all the time").arg(QString::fromStdString(status.phrase)),
+				   &dialog);
+	wake->setChecked(settings.wake);
+
+	auto *model = new QComboBox(&dialog);
+	model->addItem(tr("Fast (recommended)"), QStringLiteral("fast"));
+	model->addItem(tr("Accurate (larger, a little slower)"), QStringLiteral("accurate"));
+	model->setCurrentIndex(std::max(0, model->findData(QString::fromStdString(settings.model))));
+
+	auto *pushToTalk = new QLabel(
+		tr("Push to talk: set a key in OBS Settings, Hotkeys, under \"PlasmaStream: hold to give a "
+		   "voice command\". While it is held, what you say is sent as a command without the wake "
+		   "phrase. A Stream Deck can press it too."),
+		&dialog);
+	pushToTalk->setWordWrap(true);
+
+	auto *form = new QFormLayout;
+	form->addRow(enabled);
+	form->addRow(tr("Microphone"), mic);
+	form->addRow(wake);
+	form->addRow(tr("Speech model"), model);
+
+	if (config().token.empty()) {
+		auto *unlinked = new QLabel(tr("Add your plugin key first (Plugin key... in the dock), so "
+					       "commands have somewhere to go."),
+					    &dialog);
+		unlinked->setWordWrap(true);
+		form->addRow(unlinked);
+	}
+
+	if (mics.empty()) {
+		auto *none = new QLabel(tr("No microphone in OBS yet. Add your mic as an audio source, then "
+					   "come back."),
+					&dialog);
+		none->setWordWrap(true);
+		form->addRow(none);
+	}
+
+	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+	connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+	connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+	auto *layout = new QVBoxLayout(&dialog);
+	layout->addWidget(intro);
+	layout->addLayout(form);
+	layout->addWidget(pushToTalk);
+	layout->addWidget(buttons);
+
+	dialog.setMinimumWidth(460);
+
+	if (dialog.exec() != QDialog::Accepted) {
+		return;
+	}
+
+	settings.enabled = enabled->isChecked();
+	settings.wake = wake->isChecked();
+	settings.model = model->currentData().toString().toStdString();
+
+	if (mic->currentIndex() >= 0) {
+		settings.source_uuid = mic->currentData().toString().toStdString();
+		settings.source_name = mic->currentText().toStdString();
+	}
+
+	config().voice = settings;
+	save_config();
+	voice_apply();
+	refreshVoice();
+}
+
+void MultistreamDock::refreshVoice()
+{
+	voice_reattach();
+
+	const VoiceStatus status = voice_status();
+	const QString phrase = QString::fromStdString(status.phrase);
+	QString line;
+
+	switch (status.state) {
+	case VoiceState::Off:
+		line = tr("Voice commands: off");
+		break;
+
+	case VoiceState::Unavailable:
+	case VoiceState::Error:
+		line = tr("Voice commands: %1").arg(QString::fromStdString(status.detail));
+		break;
+
+	case VoiceState::Loading:
+		line = tr("Voice commands: loading the speech model...");
+		break;
+
+	case VoiceState::NoMicrophone:
+		line = status.microphone.empty()
+			       ? tr("Voice commands: pick a microphone under Voice commands...")
+			       : tr("Voice commands: can't find \"%1\" in this scene collection")
+					 .arg(QString::fromStdString(status.microphone));
+		break;
+
+	case VoiceState::Listening:
+		if (status.push_to_talk_held) {
+			line = tr("Voice commands: listening while the key is held");
+		} else if (!status.linked) {
+			line = tr("Voice commands: listening. Add your plugin key to run commands");
+		} else if (!status.website_problem.empty()) {
+			line = tr("Voice commands: %1").arg(QString::fromStdString(status.website_problem));
+		} else if (!status.website_on) {
+			line = tr("Voice commands: switched off on your PlasmaStream dashboard");
+		} else if (!status.wake) {
+			line = tr("Voice commands: hold your push-to-talk key to give a command");
+		} else if (phrase.isEmpty()) {
+			line = tr("Voice commands: listening, fetching your wake phrase");
+		} else {
+			line = tr("Voice commands: say \"%1\" and a command").arg(phrase);
+		}
+		break;
+	}
+
+	QString detail;
+
+	if (status.state == VoiceState::Listening) {
+		if (!status.heard.empty()) {
+			detail = tr("Heard: \"%1\"").arg(QString::fromStdString(status.heard));
+		}
+
+		if (!status.outcome.empty()) {
+			if (!detail.isEmpty()) {
+				detail += QStringLiteral("\n");
+			}
+
+			detail += QString::fromStdString(status.outcome);
+		}
+	}
+
+	if (voiceState_->text() != line) {
+		voiceState_->setText(line);
+	}
+
+	if (voiceDetail_->text() != detail) {
+		voiceDetail_->setText(detail);
+	}
+
+	voiceDetail_->setVisible(!detail.isEmpty());
+}
+
 void MultistreamDock::showOptions()
 {
 	QDialog dialog(this);
@@ -1156,7 +1436,7 @@ void MultistreamDock::fetchFromPlasmaStream()
 	setNotice(tr("Checking with PlasmaStream..."), false);
 	fetch_->setEnabled(false);
 
-	const std::string url = "https://plasmastream.live/api/plugin/" + config().token;
+	const std::string url = plasmastream_url("/api/plugin/" + config().token);
 
 	QPointer<MultistreamDock> alive(this);
 
@@ -1296,6 +1576,7 @@ static QString uptimeText(int seconds)
 void MultistreamDock::refreshStatuses()
 {
 	refreshRecording();
+	refreshVoice();
 
 	const std::vector<OutputStatus> statuses = output_statuses();
 

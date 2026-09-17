@@ -64,6 +64,10 @@ private slots:
 	void setUpRecording();
 	void toggleRecording();
 
+	/* Voice commands: pick the microphone and how to listen. The phrases
+	 * themselves are set on the website, so this stays short. */
+	void setUpVoice();
+
 private:
 	void rebuildTable();
 	void updateEmptyState();
@@ -86,6 +90,14 @@ private:
 	QLabel *recordingState_ = nullptr;
 	QPushButton *recordingSetUp_ = nullptr;
 	QPushButton *recordingToggle_ = nullptr;
+
+	void refreshVoice();
+
+	QLabel *voiceState_ = nullptr;
+	/* What it last heard and what became of it, under the row, so a long line
+	 * does not push the button around. */
+	QLabel *voiceDetail_ = nullptr;
+	QPushButton *voiceSetUp_ = nullptr;
 
 	QTimer *poll_ = nullptr;
 };

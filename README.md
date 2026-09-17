@@ -91,6 +91,30 @@ encode. Bitrate, encoder, container and which of OBS's six audio tracks to take
 are all settable. mkv is the default because it survives a crash with the
 footage intact.
 
+### Voice commands
+
+With a PlasmaStream account, you can say your wake phrase and then one of your
+phrases ("Jarvis, set my game to Hades") and PlasmaStream runs the command behind
+it. The phrases and the wake phrase are set on your dashboard, under Voice
+commands. Press **Voice commands** in the dock, tick the box and pick your
+microphone.
+
+Speech is turned into text on your computer, by an open model (Moonshine, run by
+sherpa-onnx), and the wake phrase is matched there too. Only the words after it
+are sent to PlasmaStream; everything else the microphone hears is dropped. Muting
+the microphone in OBS stops it listening. It works whether or not you are live,
+so phrases can be tried before a stream.
+
+There is also a push-to-talk key, under OBS Settings, Hotkeys, "PlasmaStream:
+hold to give a voice command". While it is held, what you say is sent as a
+command without the wake phrase, and nothing is decoded at all while it is not.
+
+Windows only for now. The runtime and the models add about 190 MB, and they live
+in the plugin's data folder rather than beside its DLL, so another plugin that
+ships its own ONNX Runtime cannot overwrite them. If one has already loaded its
+copy, voice commands stay off and the dock says why, rather than risk crashing
+OBS.
+
 ### Twitch Enhanced Broadcasting
 
 If your main stream is using it, OBS is producing a ladder of several encodings
@@ -112,7 +136,8 @@ whole wide composition is a single element.
 If that is what you need, Aitum Vertical does it and is free.
 
 There is also no replay buffer on either the vertical canvas or the scene
-recording, and no hotkeys anywhere: everything is driven from the docks.
+recording, and no hotkeys beyond voice push-to-talk: everything else is driven
+from the docks.
 
 ## Your stream keys stay on your computer
 
@@ -138,6 +163,11 @@ configure.
 cmake --preset windows-x64
 cmake --build build_x64 --config RelWithDebInfo
 ```
+
+On Windows, configure also downloads the voice command runtime and models
+(sherpa-onnx, two Moonshine models, Silero VAD and their licenses, about 250 MB),
+each pinned and checked by SHA-256; see `cmake/voice.cmake`. `-DENABLE_VOICE=OFF`
+leaves them out, and the dock then says voice is not in the build.
 
 macOS and Linux use their own presets, `macos` and `ubuntu-x86_64`. macOS needs
 Xcode 16 or newer, because the OBS template refuses anything below the macOS

@@ -49,6 +49,13 @@ if (Test-Path "$src\$name.pdb") {
 
 Copy-Item "$src\$name\locale\*.ini" "$dest\data\locale\" -Force
 
+# Voice commands: the speech runtime, the models and their licenses. About 190 MB,
+# and only present in a build made with ENABLE_VOICE (the Windows default).
+if (Test-Path "$src\$name\voice") {
+    New-Item -ItemType Directory -Force -Path "$dest\data\voice" | Out-Null
+    Copy-Item "$src\$name\voice\*" "$dest\data\voice\" -Recurse -Force
+}
+
 Write-Host "Installed to $dest" -ForegroundColor Green
 Write-Host "Start OBS, then tick PlasmaStream Multistream in the Docks menu."
 Write-Host "Docks is its own menu in the menu bar, next to View, not inside it."

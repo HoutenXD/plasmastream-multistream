@@ -100,6 +100,34 @@ struct SceneRecording {
 	int audio_track = 1;
 };
 
+/* Voice commands: the streamer talks, and the words after the wake phrase go to
+ * PlasmaStream, which runs the command they match.
+ *
+ * Everything that decides WHAT runs lives on the website: the wake phrase, the
+ * phrases and the commands behind them. Only what belongs to this computer is
+ * kept here: which microphone, how to listen, and how hard to work at it. */
+struct VoiceConfig {
+	bool enabled = false;
+
+	/* The microphone, as an OBS audio source. The UUID is what finds it, so a
+	 * rename does not lose it; the name is kept for showing and as a fallback
+	 * for a source recreated with the same name in another collection. */
+	std::string source_uuid;
+	std::string source_name;
+
+	/* Listen for the wake phrase all the time. Off leaves push-to-talk as the
+	 * only way in, which costs nothing until the key is held. */
+	bool wake = true;
+
+	/* "fast" or "accurate": which speech model. Fast is smaller and was the
+	 * better of the two on short commands in testing. */
+	std::string model = "fast";
+
+	/* OBS's own saved form of the push-to-talk key, as JSON. OBS does not save
+	 * a frontend hotkey's binding for a plugin, so this does. */
+	std::string hotkey;
+};
+
 struct Destination {
 	std::string id;
 	std::string name;
@@ -156,6 +184,9 @@ struct Config {
 
 	/* Record a scene other than the one going out. */
 	SceneRecording scene_recording;
+
+	/* Voice commands through PlasmaStream. */
+	VoiceConfig voice;
 
 	/* Whether the Canvases dock has ever been shown. OBS starts every dock
 	 * hidden and most people never find the Docks menu, so it gets opened once

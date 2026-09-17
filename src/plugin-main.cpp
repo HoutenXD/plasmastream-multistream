@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "http.hpp"
 #include "outputs.hpp"
 #include "scenerec.hpp"
+#include "voice.hpp"
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
@@ -61,6 +62,11 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 
 	/* STOPPING never arrives if OBS is closed mid-stream. */
 	case OBS_FRONTEND_EVENT_EXIT:
+		/* The key binding first: OBS keeps no copy of it for a plugin. Then
+		 * the microphone is let go before its source is destroyed. */
+		plasmastream::voice_save_hotkey();
+		plasmastream::voice_shutdown();
+
 		plasmastream::stop_outputs();
 
 		/* Unconditionally, unlike above: a recording started by hand is still
@@ -89,6 +95,11 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
 		plasmastream::vertical_follow_program();
 		plasmastream::vertical_reload_sources();
+
+		/* The microphone is a source like any other, so voice waits for the
+		 * collection too. Starting it needs no stream: a streamer sets voice
+		 * commands up long before going live. */
+		plasmastream::voice_apply();
 		break;
 
 	default:
@@ -102,6 +113,7 @@ bool obs_module_load(void)
 {
 	plasmastream::http_init();
 	plasmastream::load_config();
+	plasmastream::voice_init();
 
 	obs_frontend_add_event_callback(on_frontend_event, nullptr);
 	plasmastream::register_dock();
@@ -118,6 +130,7 @@ void obs_module_unload(void)
 	/* A module can be unloaded without the frontend exiting, so EXIT is not
 	 * enough on its own. */
 	plasmastream::stop_outputs();
+	plasmastream::voice_shutdown();
 
 	obs_frontend_remove_event_callback(on_frontend_event, nullptr);
 

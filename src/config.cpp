@@ -231,6 +231,28 @@ void load_config()
 		obs_data_release(recording);
 	}
 
+	g_config.voice = VoiceConfig();
+	obs_data_t *voice = obs_data_get_obj(data, "voice");
+
+	if (voice) {
+		obs_data_set_default_bool(voice, "wake", true);
+		obs_data_set_default_string(voice, "model", "fast");
+
+		g_config.voice.enabled = obs_data_get_bool(voice, "enabled");
+		g_config.voice.source_uuid = obs_data_get_string(voice, "source_uuid");
+		g_config.voice.source_name = obs_data_get_string(voice, "source_name");
+		g_config.voice.wake = obs_data_get_bool(voice, "wake");
+		g_config.voice.model = obs_data_get_string(voice, "model");
+		g_config.voice.hotkey = obs_data_get_string(voice, "hotkey");
+
+		/* Anything else would ask for a model folder that does not exist. */
+		if (g_config.voice.model != "fast" && g_config.voice.model != "accurate") {
+			g_config.voice.model = "fast";
+		}
+
+		obs_data_release(voice);
+	}
+
 	g_config.vertical_sources.clear();
 	obs_data_array_t *sources = obs_data_get_array(data, "vertical_sources");
 
@@ -361,6 +383,16 @@ void save_config()
 	obs_data_set_int(recording, "audio_track", g_config.scene_recording.audio_track);
 	obs_data_set_obj(data, "scene_recording", recording);
 	obs_data_release(recording);
+
+	obs_data_t *voice = obs_data_create();
+	obs_data_set_bool(voice, "enabled", g_config.voice.enabled);
+	obs_data_set_string(voice, "source_uuid", g_config.voice.source_uuid.c_str());
+	obs_data_set_string(voice, "source_name", g_config.voice.source_name.c_str());
+	obs_data_set_bool(voice, "wake", g_config.voice.wake);
+	obs_data_set_string(voice, "model", g_config.voice.model.c_str());
+	obs_data_set_string(voice, "hotkey", g_config.voice.hotkey.c_str());
+	obs_data_set_obj(data, "voice", voice);
+	obs_data_release(voice);
 
 	obs_data_array_t *array = obs_data_array_create();
 

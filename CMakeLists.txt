@@ -67,7 +67,22 @@ target_sources(
     src/scenerec.hpp
     src/vertical.cpp
     src/vertical.hpp
+    src/voice.cpp
+    src/voice.hpp
 )
+
+# On-device speech recognition for voice commands. Downloads the runtime and
+# models at configure time; see cmake/voice.cmake. Without it, voice.cpp builds as
+# a stub that says voice is not in this build.
+if(WIN32)
+  option(ENABLE_VOICE "Voice commands with on-device speech recognition" ON)
+else()
+  option(ENABLE_VOICE "Voice commands with on-device speech recognition" OFF)
+endif()
+
+if(ENABLE_VOICE)
+  include(cmake/voice.cmake)
+endif()
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 

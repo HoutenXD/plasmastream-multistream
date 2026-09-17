@@ -39,6 +39,18 @@ struct HttpResponse {
  * OBS ships and uses libcurl itself. */
 HttpResponse http_get(const std::string &url);
 
+/* The same, as a POST with a JSON body. Same threading rule. The timeout is the
+ * caller's, because a voice command nobody hears back about in six seconds is
+ * better dropped than waited on. */
+HttpResponse http_post_json(const std::string &url, const std::string &json, long timeout_sec = 15);
+
+/* A PlasmaStream address, e.g. plasmastream_url("/api/plugin/abc").
+ *
+ * The site unless the PLASMASTREAM_URL environment variable says otherwise, which
+ * is how a development build is pointed at a dashboard running on the same
+ * machine. A streamer never sets it. */
+std::string plasmastream_url(const std::string &path);
+
 /* Call once from obs_module_load, before anything spawns a thread. */
 void http_init();
 

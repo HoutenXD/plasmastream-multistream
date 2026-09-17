@@ -21,6 +21,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <curl/curl.h>
 #include <obs-module.h>
 
+#include <cstdlib>
+
 namespace plasmastream {
 
 namespace {
@@ -81,6 +83,64 @@ HttpResponse http_get(const std::string &url)
 	curl_easy_cleanup(curl);
 
 	return response;
+}
+
+HttpResponse http_post_json(const std::string &url, const std::string &json, long timeout_sec)
+{
+	HttpResponse response;
+
+	CURL *curl = curl_easy_init();
+
+	if (!curl) {
+		response.error = "could not start a request";
+		return response;
+	}
+
+	char error_buffer[CURL_ERROR_SIZE] = {0};
+	struct curl_slist *headers = curl_slist_append(nullptr, "Content-Type: application/json");
+
+	curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+	curl_easy_setopt(curl, CURLOPT_POST, 1L);
+	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json.c_str());
+	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(json.size()));
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
+	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buffer);
+	curl_easy_setopt(curl, CURLOPT_USERAGENT, "PlasmaStream-Multistream-OBS");
+
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, timeout_sec < 8 ? timeout_sec : 8L);
+
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+
+	const CURLcode result = curl_easy_perform(curl);
+
+	if (result == CURLE_OK) {
+		curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response.status);
+	} else {
+		response.error = error_buffer[0] ? error_buffer : curl_easy_strerror(result);
+		// The path only: the token in it is a credential and logs get pasted.
+		blog(LOG_WARNING, "[plasmastream] POST failed: %s", response.error.c_str());
+	}
+
+	curl_slist_free_all(headers);
+	curl_easy_cleanup(curl);
+
+	return response;
+}
+
+std::string plasmastream_url(const std::string &path)
+{
+	const char *override_url = std::getenv("PLASMASTREAM_URL");
+	std::string base = override_url && *override_url ? override_url : "https://plasmastream.live";
+
+	while (!base.empty() && base.back() == '/') {
+		base.pop_back();
+	}
+
+	return base + path;
 }
 
 } // namespace plasmastream
