@@ -39,16 +39,32 @@ jobs:
 
       # Straight into the layout OBS scans, so the zip extracts over
       # %PROGRAMDATA%\obs-studio\plugins with nothing to rearrange.
+      #
+      # Three archives, because an installed plugin updating itself should not have
+      # to fetch a hundred and forty megabytes to replace a two megabyte DLL:
+      # everything, everything but the speech models, and the models alone. The
+      # plugin asks the site which to take; see lib/plugin-release.ts on the site
+      # and src/update.cpp here.
       - name: Package
         run: |
           cmake --install build_x64 --config RelWithDebInfo --prefix release
           $v = (Get-Content buildspec.json | ConvertFrom-Json).version
-          Compress-Archive -Path release\* -DestinationPath "plasmastream-multistream-$v-windows-x64.zip"
+          $name = "plasmastream-multistream"
+
+          Compress-Archive -Path release\* -DestinationPath "$name-$v-windows-x64.zip"
+
+          Copy-Item -Recurse release update
+          Remove-Item -Recurse -Force "update\$name\data\voice\models"
+          Compress-Archive -Path update\* -DestinationPath "$name-$v-windows-x64-update.zip"
+
+          New-Item -ItemType Directory -Force "models\$name\data\voice" | Out-Null
+          Copy-Item -Recurse "release\$name\data\voice\models" "models\$name\data\voice\models"
+          Compress-Archive -Path models\* -DestinationPath "$name-$v-voice-models.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: plasmastream-multistream-windows-x64
-          path: plasmastream-multistream-*-windows-x64.zip
+          path: plasmastream-multistream-*.zip
 
   macos:
     name: macOS Universal

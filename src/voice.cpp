@@ -185,6 +185,7 @@ void voice_init() {}
 void voice_apply() {}
 void voice_reattach() {}
 void voice_refresh_website() {}
+void voice_streaming(bool) {}
 void voice_save_hotkey() {}
 void voice_shutdown() {}
 
@@ -222,6 +223,17 @@ constexpr auto kCommandAfterWake = std::chrono::seconds(6);
  * the website while OBS is open. */
 constexpr auto kWebsiteRefresh = std::chrono::seconds(60);
 
+/* How often the kept transcript is sent, when there is one to send. Matches
+ * SPOKEN_FLUSH_SECONDS in db/src/transcript.ts: a request per sentence would be
+ * one every couple of seconds for a talkative streamer, and nothing is waiting
+ * on them; much longer and a crash loses more than it needs to. */
+constexpr auto kTranscriptFlush = std::chrono::seconds(30);
+
+/* The most lines held before sending. Matches SPOKEN_LINES_PER_POST, which is
+ * what the server takes from one request. Past this the oldest go, so a server
+ * that cannot be reached costs memory that is bounded rather than growing. */
+constexpr size_t kTranscriptMax = 60;
+
 /* The last word on a push-to-talk command arrives after the key is released,
  * because OBS hands audio over in batches. */
 constexpr auto kPushToTalkTail = std::chrono::milliseconds(300);
@@ -255,6 +267,26 @@ bool g_reload = false;
 
 std::atomic<bool> g_push_to_talk{false};
 std::atomic<bool> g_refresh_website{true};
+/* Asks the worker to send what it is holding now rather than on its next beat.
+ * Set when a stream ends, which is when the last minute matters most and is
+ * also the moment after which nothing more will be added. */
+std::atomic<bool> g_flush_transcript{false};
+
+/* Set from the frontend's streaming events. The transcript's hard gate: read
+ * everywhere a line might be kept, and never assumed. */
+std::atomic<bool> g_streaming{false};
+
+/* One line the microphone heard, waiting to be sent. Held only for a channel
+ * that switched this on in both places, and only while streaming. */
+struct Spoken {
+	std::string text;
+	/* Wall clock, milliseconds, because the server places the line inside a
+	 * stream by when it was said. */
+	int64_t at_ms = 0;
+};
+
+std::mutex g_transcript_mutex;
+std::vector<Spoken> g_transcript;
 
 /* UI thread only. */
 std::thread g_worker;
@@ -514,6 +546,138 @@ std::string current_token()
 	return g_token;
 }
 
+/* Whether a line said right now would be kept.
+ *
+ * Three answers have to agree, and this asks all three every time rather than
+ * caching any of them. A streamer who switches it off on the website has it
+ * stop within the minute; one who switches it off here has it stop at once; one
+ * who stops streaming has it stop immediately. There is no state to go stale. */
+bool keeping_transcript()
+{
+	if (!g_streaming.load() || !config().voice.transcript) {
+		return false;
+	}
+
+	std::lock_guard<std::mutex> lock(g_status_mutex);
+	return g_status.website_on && g_status.website_transcript;
+}
+
+/* What the dock says about it. Written on the same beat as the buffer so the
+ * two can never disagree about whether anything is being kept. */
+void set_transcript_note(const std::string &note)
+{
+	std::lock_guard<std::mutex> lock(g_status_mutex);
+	g_status.transcript_note = note;
+}
+
+/* Hold one line for sending. Called for every decoded line, command or not,
+ * which is the whole point: the ones without the wake phrase are the ones worth
+ * keeping. */
+void keep_line(const std::string &text)
+{
+	const int64_t now_ms = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+							  std::chrono::system_clock::now().time_since_epoch())
+							  .count());
+
+	size_t held = 0;
+
+	{
+		std::lock_guard<std::mutex> lock(g_transcript_mutex);
+		g_transcript.push_back(Spoken{text, now_ms});
+
+		/* Bounded, not unbounded. A server that cannot be reached for an hour
+		 * must not turn a transcript into a memory leak, and the newest lines
+		 * are the ones worth keeping when something has to go. */
+		if (g_transcript.size() > kTranscriptMax) {
+			g_transcript.erase(g_transcript.begin(), g_transcript.begin() + static_cast<std::ptrdiff_t>(g_transcript.size() - kTranscriptMax));
+		}
+
+		held = g_transcript.size();
+	}
+
+	set_transcript_note("Keeping what you say while you are live (" + std::to_string(held) +
+			    (held == 1 ? " line waiting to send)." : " lines waiting to send)."));
+}
+
+/* Send everything held, and keep it if the send failed.
+ *
+ * Blocking, so worker thread only. Never throws and never stops the listener:
+ * a transcript that does not arrive is a feature that did not work, and losing
+ * voice commands over it would be much worse than that. */
+void flush_transcript()
+{
+	std::vector<Spoken> batch;
+
+	{
+		std::lock_guard<std::mutex> lock(g_transcript_mutex);
+
+		if (g_transcript.empty()) {
+			return;
+		}
+
+		batch.swap(g_transcript);
+	}
+
+	const std::string token = current_token();
+
+	if (token.empty()) {
+		set_transcript_note("Not sending what you say: add your plugin key under Plugin key.");
+		return;
+	}
+
+	std::string json = "{\"lines\":[";
+
+	for (size_t i = 0; i < batch.size(); i++) {
+		if (i > 0) {
+			json += ',';
+		}
+
+		json += "{\"text\":";
+		json += json_string(batch[i].text);
+		json += ",\"at\":";
+		json += std::to_string(batch[i].at_ms);
+		json += '}';
+	}
+
+	json += "]}";
+
+	const HttpResponse response = http_post_json(plasmastream_url("/api/plugin/" + token + "/transcript"), json, 10);
+
+	if (response.ok()) {
+		set_transcript_note("Keeping what you say while you are live.");
+		return;
+	}
+
+	/* A refusal is final: the website says this channel is not keeping a
+	 * transcript, whatever this plugin's own copy of the setting says. Dropping
+	 * the batch is the correct answer, and the note says why rather than
+	 * leaving a streamer wondering. */
+	if (response.status == 403) {
+		set_transcript_note("PlasmaStream is not keeping what you say. Switch it on under Voice commands on the website.");
+		return;
+	}
+
+	if (response.status == 404) {
+		set_transcript_note("PlasmaStream did not recognize the plugin key, so nothing is being kept.");
+		return;
+	}
+
+	/* Anything else is this end or the network, so the lines go back and the
+	 * next flush tries again. Put at the FRONT: they were said first. */
+	{
+		std::lock_guard<std::mutex> lock(g_transcript_mutex);
+		batch.insert(batch.end(), g_transcript.begin(), g_transcript.end());
+		g_transcript.swap(batch);
+
+		if (g_transcript.size() > kTranscriptMax) {
+			g_transcript.erase(g_transcript.begin(), g_transcript.begin() + static_cast<std::ptrdiff_t>(g_transcript.size() - kTranscriptMax));
+		}
+	}
+
+	set_transcript_note(response.status == 0 ? "Could not reach PlasmaStream to send what you said; trying again."
+						 : "PlasmaStream could not take what you said (" + std::to_string(response.status) + ").");
+}
+
 /* The wake phrase, and whether voice is switched on, from the website. */
 void fetch_website()
 {
@@ -556,6 +720,9 @@ void fetch_website()
 	g_status.website_problem.clear();
 	g_status.website_on = obs_data_get_bool(data, "on");
 	g_status.phrase = obs_data_get_string(data, "phrase");
+	/* Absent from an older server's answer, which reads as false: a server that
+	 * has never heard of the setting is a server that is not keeping one. */
+	g_status.website_transcript = obs_data_get_bool(data, "keepTranscript");
 	obs_data_release(data);
 }
 
@@ -710,6 +877,14 @@ struct Listener {
 			phrase = g_status.phrase;
 		}
 
+		/* Before anything about commands, because this is not about commands.
+		 * Every line is kept, wake phrase or not: the ones without it are the
+		 * ones a transcript exists for. keeping_transcript() is the only thing
+		 * deciding, and it says no unless three separate switches say yes. */
+		if (keeping_transcript()) {
+			keep_line(text);
+		}
+
 		std::string words;
 		const bool addressed = voice_after_wake(phrase, text, words);
 
@@ -768,6 +943,7 @@ void worker_main()
 	bool push_active = false;
 	Clock::time_point push_released{};
 	Clock::time_point website_fetched{};
+	Clock::time_point transcript_flushed = Clock::now();
 
 	for (;;) {
 		std::string wanted_model;
@@ -806,6 +982,13 @@ void worker_main()
 		if (g_refresh_website.exchange(false) || Clock::now() - website_fetched > kWebsiteRefresh) {
 			fetch_website();
 			website_fetched = Clock::now();
+		}
+
+		/* On its own beat rather than per line, and on this thread because the
+		 * request blocks. Nothing waits on the answer. */
+		if (g_flush_transcript.exchange(false) || Clock::now() - transcript_flushed >= kTranscriptFlush) {
+			flush_transcript();
+			transcript_flushed = Clock::now();
 		}
 
 		uint32_t rate = 0;
@@ -911,6 +1094,12 @@ void worker_main()
 
 		chunk.clear();
 	}
+
+	/* Whatever is still in hand, before the thread goes. OBS is closing or the
+	 * streamer switched voice off; either way these are lines they already
+	 * agreed to keep, and dropping them silently would be the wrong end of the
+	 * trade. Blocking, but this thread is finishing anyway. */
+	flush_transcript();
 
 	destroy_engine(engine);
 	set_engine(EngineState::Idle);
@@ -1108,6 +1297,35 @@ void voice_refresh_website()
 
 	g_refresh_website = true;
 	g_audio_cv.notify_all();
+}
+
+void voice_streaming(bool active)
+{
+	const bool was = g_streaming.exchange(active);
+
+	if (was == active) {
+		return;
+	}
+
+	if (active) {
+		/* Nothing said before the stream started is kept, and the buffer should
+		 * hold nothing at this point. Cleared anyway rather than trusted: this
+		 * is the one line of code standing between "what I said on stream" and
+		 * "what I said in my room half an hour earlier". */
+		{
+			std::lock_guard<std::mutex> lock(g_transcript_mutex);
+			g_transcript.clear();
+		}
+
+		set_transcript_note(config().voice.transcript ? "Keeping what you say while you are live." : "");
+		return;
+	}
+
+	/* Off. The gate has already closed, so nothing more will be added; what is
+	 * held was all said on stream and goes now rather than in thirty seconds. */
+	g_flush_transcript = true;
+	g_audio_cv.notify_all();
+	set_transcript_note("");
 }
 
 void voice_save_hotkey()

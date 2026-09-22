@@ -243,6 +243,9 @@ void load_config()
 		g_config.voice.source_name = obs_data_get_string(voice, "source_name");
 		g_config.voice.wake = obs_data_get_bool(voice, "wake");
 		g_config.voice.model = obs_data_get_string(voice, "model");
+		/* No default: a config written before this existed means no, which is
+		 * what obs_data_get_bool returns for a key that is not there. */
+		g_config.voice.transcript = obs_data_get_bool(voice, "transcript");
 		g_config.voice.hotkey = obs_data_get_string(voice, "hotkey");
 
 		/* Anything else would ask for a model folder that does not exist. */
@@ -251,6 +254,35 @@ void load_config()
 		}
 
 		obs_data_release(voice);
+	}
+
+	g_config.warnings = StreamWarnings();
+	obs_data_t *warnings = obs_data_get_obj(data, "warnings");
+
+	if (warnings) {
+		/* No defaults set: every one of these is off unless the file says
+		 * otherwise, and off is what obs_data_get_bool gives for a key that is
+		 * not there. A config written before this existed asked for none of
+		 * them. */
+		g_config.warnings.mic_muted = obs_data_get_bool(warnings, "mic_muted");
+		g_config.warnings.silence = obs_data_get_bool(warnings, "silence");
+		g_config.warnings.forgotten = obs_data_get_bool(warnings, "forgotten");
+		g_config.warnings.source_uuid = obs_data_get_string(warnings, "source_uuid");
+		g_config.warnings.source_name = obs_data_get_string(warnings, "source_name");
+
+		obs_data_release(warnings);
+	}
+
+	g_config.update = UpdateConfig();
+	obs_data_t *update = obs_data_get_obj(data, "update");
+
+	if (update) {
+		obs_data_set_default_bool(update, "check", true);
+
+		g_config.update.check = obs_data_get_bool(update, "check");
+		g_config.update.automatic = obs_data_get_bool(update, "automatic");
+
+		obs_data_release(update);
 	}
 
 	g_config.vertical_sources.clear();
@@ -390,9 +422,25 @@ void save_config()
 	obs_data_set_string(voice, "source_name", g_config.voice.source_name.c_str());
 	obs_data_set_bool(voice, "wake", g_config.voice.wake);
 	obs_data_set_string(voice, "model", g_config.voice.model.c_str());
+	obs_data_set_bool(voice, "transcript", g_config.voice.transcript);
 	obs_data_set_string(voice, "hotkey", g_config.voice.hotkey.c_str());
 	obs_data_set_obj(data, "voice", voice);
 	obs_data_release(voice);
+
+	obs_data_t *warnings = obs_data_create();
+	obs_data_set_bool(warnings, "mic_muted", g_config.warnings.mic_muted);
+	obs_data_set_bool(warnings, "silence", g_config.warnings.silence);
+	obs_data_set_bool(warnings, "forgotten", g_config.warnings.forgotten);
+	obs_data_set_string(warnings, "source_uuid", g_config.warnings.source_uuid.c_str());
+	obs_data_set_string(warnings, "source_name", g_config.warnings.source_name.c_str());
+	obs_data_set_obj(data, "warnings", warnings);
+	obs_data_release(warnings);
+
+	obs_data_t *update = obs_data_create();
+	obs_data_set_bool(update, "check", g_config.update.check);
+	obs_data_set_bool(update, "automatic", g_config.update.automatic);
+	obs_data_set_obj(data, "update", update);
+	obs_data_release(update);
 
 	obs_data_array_t *array = obs_data_array_create();
 

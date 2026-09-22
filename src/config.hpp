@@ -123,9 +123,63 @@ struct VoiceConfig {
 	 * better of the two on short commands in testing. */
 	std::string model = "fast";
 
+	/* Keep what the microphone heard, not only the commands in it.
+	 *
+	 * Off, and it stays off until it is switched on in two places: here, and on
+	 * the PlasmaStream dashboard. Either one off and nothing leaves this
+	 * computer, and nothing at all is sent while OBS is not streaming.
+	 *
+	 * With both on, the lines this plugin already decodes to find the wake
+	 * phrase in are sent to PlasmaStream while live, where they are kept for
+	 * fourteen days so the streamer's co-host can answer questions about what
+	 * was said. See db/src/transcript.ts. */
+	bool transcript = false;
+
 	/* OBS's own saved form of the push-to-talk key, as JSON. OBS does not save
 	 * a frontend hotkey's binding for a plugin, so this does. */
 	std::string hotkey;
+};
+
+/* Private warnings in the dock: a muted microphone, dead air, a stream still
+ * running after everybody went home.
+ *
+ * Three switches rather than one, because they are three different risks and
+ * wanting one is no reason to want the others. Somebody streaming a silent art
+ * timelapse wants to be told when their microphone is muted and would be told
+ * about dead air every minute of every stream.
+ *
+ * All of them off. A warning nobody asked for is one they will learn to scroll
+ * past, and these are only worth anything if they are still being read on the
+ * night one of them is right. */
+struct StreamWarnings {
+	/* The chosen microphone is muted in OBS while the stream is live. */
+	bool mic_muted = false;
+	/* Nothing audible anywhere in the mix for a sustained stretch. */
+	bool silence = false;
+	/* Still live long after anything last happened. */
+	bool forgotten = false;
+
+	/* The microphone to watch, as an OBS audio source. UUID first with the name
+	 * as a fallback, for the same reasons voice keeps both.
+	 *
+	 * Its own pick rather than a borrow of voice.source_uuid, so that watching a
+	 * microphone does not quietly mean switching voice commands on as well.
+	 * The dialog offers voice's choice as the default, which is where the two
+	 * agreeing is worth something. */
+	std::string source_uuid;
+	std::string source_name;
+};
+
+/* Staying current.
+ *
+ * Checking is on because a plugin that holds stream keys and talks to three
+ * platforms is one nobody should be running a year-old copy of without being
+ * told. Installing on its own is off, because replacing files under somebody
+ * mid-stream, unasked, is not a thing to do by default: the first time, they
+ * press the button and see what it does. */
+struct UpdateConfig {
+	bool check = true;
+	bool automatic = false;
 };
 
 struct Destination {
@@ -187,6 +241,12 @@ struct Config {
 
 	/* Voice commands through PlasmaStream. */
 	VoiceConfig voice;
+
+	/* Warnings only the streamer sees. */
+	StreamWarnings warnings;
+
+	/* Whether to look for a newer plugin, and whether to fetch it unasked. */
+	UpdateConfig update;
 
 	/* Whether the Canvases dock has ever been shown. OBS starts every dock
 	 * hidden and most people never find the Docks menu, so it gets opened once

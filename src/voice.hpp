@@ -71,6 +71,12 @@ struct VoiceStatus {
 	 * phrase is empty until the website has answered. */
 	bool website_on = true;
 	std::string phrase;
+	/* The website's half of the transcript switch. The plugin's own half is
+	 * config().voice.transcript, and both have to be on. */
+	bool website_transcript = false;
+	/* Whether anything is being kept right now, and why not when it is not.
+	 * One line, for the dock. */
+	std::string transcript_note;
 	/* Why the website could not be asked, when it could not. */
 	std::string website_problem;
 
@@ -100,6 +106,12 @@ void voice_reattach();
 
 /* Asks the website for the wake phrase again, e.g. after the key changed. */
 void voice_refresh_website();
+
+/* Whether OBS is broadcasting. From the frontend STREAMING_STARTED and
+ * STREAMING_STOPPING events, and it is the gate on the transcript: nothing said
+ * off stream is ever sent anywhere. Stopping also sends whatever is still in
+ * hand, because the end of a stream is when the last minute matters most. */
+void voice_streaming(bool active);
 
 /* OBS does not save a plugin's frontend hotkey, so this writes the binding into
  * the plugin's config. From the EXIT event. */

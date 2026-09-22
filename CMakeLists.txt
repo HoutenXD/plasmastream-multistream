@@ -65,10 +65,14 @@ target_sources(
     src/preview.hpp
     src/scenerec.cpp
     src/scenerec.hpp
+    src/update.cpp
+    src/update.hpp
     src/vertical.cpp
     src/vertical.hpp
     src/voice.cpp
     src/voice.hpp
+    src/warnings.cpp
+    src/warnings.hpp
 )
 
 # On-device speech recognition for voice commands. Downloads the runtime and

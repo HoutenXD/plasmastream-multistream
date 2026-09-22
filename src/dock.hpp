@@ -68,6 +68,16 @@ private slots:
 	 * themselves are set on the website, so this stays short. */
 	void setUpVoice();
 
+	/* The three private warnings, one switch each. Its own dialog rather than a
+	 * row of Options, because the thresholds need a sentence apiece and nobody
+	 * switches on a warning they have not been told the rules for. */
+	void setUpWarnings();
+
+	/* The one button in the update banner. What it does depends on where the
+	 * update has got to: fetch it, finish it, or open the page for the
+	 * platforms that install through a package. */
+	void updatePressed();
+
 private:
 	void rebuildTable();
 	void updateEmptyState();
@@ -92,12 +102,30 @@ private:
 	QPushButton *recordingToggle_ = nullptr;
 
 	void refreshVoice();
+	void refreshUpdate();
+
+	/* Hidden unless there is something to say, and the first thing in the dock
+	 * when there is: an out of date plugin is worth more of the eye than a
+	 * destination list that is working. */
+	QWidget *updateRow_ = nullptr;
+	QLabel *updateText_ = nullptr;
+	QLabel *updateNotes_ = nullptr;
+	QPushButton *updateButton_ = nullptr;
+
 
 	QLabel *voiceState_ = nullptr;
 	/* What it last heard and what became of it, under the row, so a long line
 	 * does not push the button around. */
 	QLabel *voiceDetail_ = nullptr;
 	QPushButton *voiceSetUp_ = nullptr;
+
+	void refreshWarnings();
+
+	QLabel *warningsState_ = nullptr;
+	/* The second and third warning, when more than one is true at once. Same
+	 * shape as the voice row for the same reason. */
+	QLabel *warningsDetail_ = nullptr;
+	QPushButton *warningsSetUp_ = nullptr;
 
 	QTimer *poll_ = nullptr;
 };

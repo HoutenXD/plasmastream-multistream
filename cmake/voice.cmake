@@ -121,6 +121,16 @@ endforeach()
 file(COPY "${VOICE_DEPS}/models/fast/${_voice_tiny}/LICENSE" DESTINATION "${VOICE_STAGE}/licenses")
 file(RENAME "${VOICE_STAGE}/licenses/LICENSE" "${VOICE_STAGE}/licenses/moonshine-LICENSE.txt")
 
+# Which models this build carries, written where both the plugin and the check
+# that keeps the site honest can read it.
+#
+# Their own version, not the plugin's: these files come from someone else's
+# release and change when that release does, which is almost never. An install
+# already on this set updates its binary alone, which is twenty megabytes rather
+# than a hundred and forty.
+set(VOICE_MODELS_VERSION "moonshine-2026-02-27")
+file(WRITE "${VOICE_STAGE}/models/models.txt" "${VOICE_MODELS_VERSION}\n")
+
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE PLASMASTREAM_VOICE SHERPA_ONNX_BUILD_SHARED_LIBS)
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${VOICE_DEPS}/include")
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE "${_voice_lib}/sherpa-onnx-c-api.lib" delayimp)

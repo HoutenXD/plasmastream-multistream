@@ -16,14 +16,16 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-#include "config.hpp"
 #include "canvases.hpp"
+#include "config.hpp"
 #include "dock.hpp"
-#include "vertical.hpp"
 #include "http.hpp"
 #include "outputs.hpp"
 #include "scenerec.hpp"
+#include "update.hpp"
+#include "vertical.hpp"
 #include "voice.hpp"
+#include "warnings.hpp"
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
@@ -38,6 +40,14 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 {
 	switch (event) {
 	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
+		/* The transcript's gate. Nothing said before this moment was kept, and
+		 * nothing said after the stop below will be. */
+		plasmastream::voice_streaming(true);
+
+		/* The other gate. None of the private warnings count anything off air,
+		 * and this is the moment their clocks start from. */
+		plasmastream::warnings_streaming(true);
+
 		plasmastream::start_outputs();
 
 		/* Off unless somebody asked for it. Whoever set up a clean recording
@@ -52,6 +62,9 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 	/* STOPPING, not STOPPED: by the time OBS says STOPPED the main output has
 	 * torn down the encoders these are still holding. */
 	case OBS_FRONTEND_EVENT_STREAMING_STOPPING:
+		plasmastream::voice_streaming(false);
+		plasmastream::warnings_streaming(false);
+
 		plasmastream::stop_outputs();
 
 		if (plasmastream::config().scene_recording.with_stream) {
@@ -66,6 +79,10 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 		 * the microphone is let go before its source is destroyed. */
 		plasmastream::voice_save_hotkey();
 		plasmastream::voice_shutdown();
+
+		/* The audio tap comes off before libobs tears its mix down, for the
+		 * same reason the microphone does. */
+		plasmastream::warnings_shutdown();
 
 		plasmastream::stop_outputs();
 
@@ -85,6 +102,10 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 	 * when that changes. A no-op when there is no vertical canvas. */
 	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
 		plasmastream::vertical_follow_program();
+
+		/* Somebody pressed something. The only reason this matters is the
+		 * warning about a stream nobody is in front of any more. */
+		plasmastream::warnings_activity();
 		break;
 
 	/* Sources put on the vertical frame are looked up by name, and none of
@@ -114,6 +135,7 @@ bool obs_module_load(void)
 	plasmastream::http_init();
 	plasmastream::load_config();
 	plasmastream::voice_init();
+	plasmastream::update_init();
 
 	obs_frontend_add_event_callback(on_frontend_event, nullptr);
 	plasmastream::register_dock();
@@ -131,6 +153,12 @@ void obs_module_unload(void)
 	 * enough on its own. */
 	plasmastream::stop_outputs();
 	plasmastream::voice_shutdown();
+	plasmastream::warnings_shutdown();
+
+	/* Before the rest of the teardown: an update that was downloaded and never
+	 * installed is handed to the script here, and the script is waiting for
+	 * this process to end. */
+	plasmastream::update_shutdown();
 
 	obs_frontend_remove_event_callback(on_frontend_event, nullptr);
 

@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 #include <plugin-support.h>
 
+#include <cstdio>
 #include <cstdlib>
 
 namespace plasmastream {
@@ -138,6 +139,87 @@ HttpResponse http_post_json(const std::string &url, const std::string &json, lon
 	curl_easy_cleanup(curl);
 
 	return response;
+}
+
+namespace {
+
+struct Progress {
+	const std::function<bool(double)> *report;
+};
+
+int watch(void *user, curl_off_t total, curl_off_t so_far, curl_off_t, curl_off_t)
+{
+	auto *progress = static_cast<Progress *>(user);
+
+	if (!progress || !progress->report) {
+		return 0;
+	}
+
+	/* A server that sends no length leaves this at zero all the way, which is
+	 * honest: nothing here knows how far along it is. */
+	const double fraction = total > 0 ? static_cast<double>(so_far) / static_cast<double>(total) : 0.0;
+
+	/* Anything but zero cancels the transfer, which is what a report saying
+	 * stop means. */
+	return (*progress->report)(fraction) ? 0 : 1;
+}
+
+} // namespace
+
+bool http_download(const std::string &url, const std::string &path, const std::function<bool(double)> &progress)
+{
+	CURL *curl = curl_easy_init();
+
+	if (!curl) {
+		return false;
+	}
+
+	FILE *file = nullptr;
+
+#ifdef _WIN32
+	fopen_s(&file, path.c_str(), "wb");
+#else
+	file = fopen(path.c_str(), "wb");
+#endif
+
+	if (!file) {
+		curl_easy_cleanup(curl);
+		return false;
+	}
+
+	char error_buffer[CURL_ERROR_SIZE] = {0};
+	Progress watching{&progress};
+
+	curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
+	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buffer);
+	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+	curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent().c_str());
+	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+	curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, watch);
+	curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &watching);
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
+	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+
+	const CURLcode result = curl_easy_perform(curl);
+	long status = 0;
+	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+
+	fclose(file);
+	curl_easy_cleanup(curl);
+
+	const bool ok = result == CURLE_OK && status >= 200 && status < 300;
+
+	if (!ok) {
+		remove(path.c_str());
+		blog(LOG_WARNING, "[plasmastream] download failed (%ld): %s", status,
+		     error_buffer[0] ? error_buffer : curl_easy_strerror(result));
+	}
+
+	return ok;
 }
 
 std::string plasmastream_url(const std::string &path)

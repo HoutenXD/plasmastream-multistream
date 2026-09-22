@@ -22,10 +22,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "config.hpp"
 #include "http.hpp"
+#include "update.hpp"
 #include "outputs.hpp"
 #include "scenerec.hpp"
 #include "vertical.hpp"
 #include "voice.hpp"
+#include "warnings.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -52,12 +54,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QMessageBox>
 #include <QApplication>
 #include <QJsonParseError>
+#include <QDesktopServices>
 #include <QPointer>
 #include <QPushButton>
 #include <QSize>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include <obs-frontend-api.h>
@@ -486,6 +490,30 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	notice_->setWordWrap(true);
 	notice_->setVisible(false);
 
+	updateText_ = new QLabel(this);
+	updateText_->setWordWrap(true);
+	updateText_->setTextFormat(Qt::PlainText);
+
+	updateNotes_ = new QLabel(this);
+	updateNotes_->setWordWrap(true);
+	updateNotes_->setTextFormat(Qt::PlainText);
+	updateNotes_->setEnabled(false);
+
+	updateButton_ = new QPushButton(this);
+	connect(updateButton_, &QPushButton::clicked, this, &MultistreamDock::updatePressed);
+
+	updateRow_ = new QWidget(this);
+	updateRow_->setVisible(false);
+
+	auto *updateLayout = new QVBoxLayout(updateRow_);
+	updateLayout->setContentsMargins(0, 0, 0, 0);
+
+	auto *updateTop = new QHBoxLayout;
+	updateTop->addWidget(updateText_, 1);
+	updateTop->addWidget(updateButton_);
+	updateLayout->addLayout(updateTop);
+	updateLayout->addWidget(updateNotes_);
+
 	recordingState_ = new QLabel(this);
 	recordingState_->setTextFormat(Qt::PlainText);
 
@@ -510,6 +538,20 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	voiceSetUp_ = new QPushButton(tr("Voice commands..."), this);
 	connect(voiceSetUp_, &QPushButton::clicked, this, &MultistreamDock::setUpVoice);
 
+	warningsState_ = new QLabel(this);
+	warningsState_->setTextFormat(Qt::PlainText);
+	warningsState_->setWordWrap(true);
+
+	warningsDetail_ = new QLabel(this);
+	warningsDetail_->setTextFormat(Qt::PlainText);
+	warningsDetail_->setWordWrap(true);
+	warningsDetail_->setVisible(false);
+	warningsDetail_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+	warningsDetail_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+
+	warningsSetUp_ = new QPushButton(tr("Stream check..."), this);
+	connect(warningsSetUp_, &QPushButton::clicked, this, &MultistreamDock::setUpWarnings);
+
 	auto *buttons = new QHBoxLayout;
 	buttons->addWidget(add_);
 	buttons->addWidget(edit_);
@@ -517,6 +559,7 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	buttons->addStretch();
 
 	auto *layout = new QVBoxLayout(this);
+	layout->addWidget(updateRow_);
 	layout->addWidget(table_);
 	layout->addWidget(empty_);
 	layout->addLayout(buttons);
@@ -541,6 +584,14 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	voiceRow->addWidget(voiceSetUp_);
 	layout->addLayout(voiceRow);
 	layout->addWidget(voiceDetail_);
+
+	layout->addWidget(divider(this));
+
+	auto *warningsRow = new QHBoxLayout;
+	warningsRow->addWidget(warningsState_, 1);
+	warningsRow->addWidget(warningsSetUp_);
+	layout->addLayout(warningsRow);
+	layout->addWidget(warningsDetail_);
 
 	layout->addWidget(notice_);
 
@@ -567,6 +618,8 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	updateButtons();
 	refreshRecording();
 	refreshVoice();
+	refreshWarnings();
+	refreshUpdate();
 	lay_out_destination_columns(table_);
 }
 
@@ -1194,6 +1247,21 @@ void MultistreamDock::setUpVoice()
 	model->addItem(tr("Accurate (larger, a little slower)"), QStringLiteral("accurate"));
 	model->setCurrentIndex(std::max(0, model->findData(QString::fromStdString(settings.model))));
 
+	auto *transcript = new QCheckBox(tr("Keep what I say while I am live"), &dialog);
+	transcript->setChecked(settings.transcript);
+
+	/* Said in full, in the dialog, next to the box. A setting that sends a
+	 * microphone transcript off this machine is not one to explain in a tooltip
+	 * or leave to the website to describe. */
+	auto *transcriptNote = new QLabel(
+		tr("Off by default. With this on, and only while OBS is streaming, the lines above are sent "
+		   "to PlasmaStream instead of being thrown away, so your co-host can answer questions "
+		   "about what you actually said. They are kept for 14 days and then deleted.\n\nIt also has "
+		   "to be switched on under Voice commands on your PlasmaStream dashboard, where switching "
+		   "it off deletes every line it kept. Nothing is sent while you are not streaming."),
+		&dialog);
+	transcriptNote->setWordWrap(true);
+
 	auto *pushToTalk = new QLabel(
 		tr("Push to talk: set a key in OBS Settings, Hotkeys, under \"PlasmaStream: hold to give a "
 		   "voice command\". While it is held, what you say is sent as a command without the wake "
@@ -1206,6 +1274,8 @@ void MultistreamDock::setUpVoice()
 	form->addRow(tr("Microphone"), mic);
 	form->addRow(wake);
 	form->addRow(tr("Speech model"), model);
+	form->addRow(transcript);
+	form->addRow(transcriptNote);
 
 	if (config().token.empty()) {
 		auto *unlinked = new QLabel(tr("Add your plugin key first (Plugin key... in the dock), so "
@@ -1242,6 +1312,7 @@ void MultistreamDock::setUpVoice()
 	settings.enabled = enabled->isChecked();
 	settings.wake = wake->isChecked();
 	settings.model = model->currentData().toString().toStdString();
+	settings.transcript = transcript->isChecked();
 
 	if (mic->currentIndex() >= 0) {
 		settings.source_uuid = mic->currentData().toString().toStdString();
@@ -1316,6 +1387,17 @@ void MultistreamDock::refreshVoice()
 
 			detail += QString::fromStdString(status.outcome);
 		}
+
+		/* Last, and only when there is something to say. A streamer who has
+		 * switched the transcript on should be able to see at a glance that it
+		 * is working, and see immediately when it is not. */
+		if (!status.transcript_note.empty()) {
+			if (!detail.isEmpty()) {
+				detail += QStringLiteral("\n");
+			}
+
+			detail += QString::fromStdString(status.transcript_note);
+		}
 	}
 
 	if (voiceState_->text() != line) {
@@ -1327,6 +1409,333 @@ void MultistreamDock::refreshVoice()
 	}
 
 	voiceDetail_->setVisible(!detail.isEmpty());
+}
+
+namespace {
+
+/* One warning as a sentence, with the number in it.
+ *
+ * The number is the point. "You are muted" is an accusation somebody argues
+ * with; "muted for 2m" is a fact they check. Second person and plain words, so
+ * it reads the way a person in the room would say it rather than the way an
+ * alarm would. */
+QString warning_text(const Warning &warning)
+{
+	switch (warning.kind) {
+	case WarningKind::MicMuted:
+		return QObject::tr("\"%1\" has been muted for %2")
+			.arg(QString::fromStdString(warning.microphone))
+			.arg(short_uptime(warning.seconds));
+
+	case WarningKind::Silent:
+		return QObject::tr("nothing has been audible on your stream for %1")
+			.arg(short_uptime(warning.seconds));
+
+	case WarningKind::Forgotten:
+		return QObject::tr("still live, and nothing has happened for %1. Did you mean to stop?")
+			.arg(short_uptime(warning.seconds));
+	}
+
+	return {};
+}
+
+} // namespace
+
+/* The same shape as the voice row: one line saying what it is doing, and the
+ * rest underneath only when there is a rest. */
+void MultistreamDock::refreshWarnings()
+{
+	const WarningsStatus status = warnings_status();
+
+	QColor ink = color::muted();
+	QString line;
+
+	if (!status.watching) {
+		line = tr("Stream check: off");
+	} else if (!status.warnings.empty()) {
+		// Ahead of the missing microphone below, which can only ever be true at
+		// the same time as one of these: something wrong with the stream right
+		// now beats something wrong with the settings, and the settings line
+		// comes back the moment the stream is fine again.
+		ink = color::danger();
+		line = tr("Stream check: %1").arg(warning_text(status.warnings.front()));
+	} else if (status.microphone_missing) {
+		// Amber rather than red, and said off air as well, because it is
+		// somebody's setup to fix rather than their stream going wrong.
+		ink = color::warn();
+		line = status.microphone.empty()
+			       ? tr("Stream check: pick a microphone under Stream check...")
+			       : tr("Stream check: can't find \"%1\" in this scene collection")
+					 .arg(QString::fromStdString(status.microphone));
+	} else if (!status.streaming) {
+		line = tr("Stream check: watching once you go live");
+	} else {
+		line = tr("Stream check: nothing to flag");
+	}
+
+	QString detail;
+
+	for (size_t i = 1; i < status.warnings.size(); i++) {
+		if (!detail.isEmpty()) {
+			detail += QStringLiteral("\n");
+		}
+
+		detail += warning_text(status.warnings[i]);
+	}
+
+	if (warningsState_->text() != line) {
+		warningsState_->setText(line);
+	}
+
+	warningsState_->setStyleSheet(QStringLiteral("color: %1;").arg(ink.name()));
+
+	if (warningsDetail_->text() != detail) {
+		warningsDetail_->setText(detail);
+	}
+
+	warningsDetail_->setVisible(!detail.isEmpty());
+}
+
+void MultistreamDock::setUpWarnings()
+{
+	StreamWarnings settings = config().warnings;
+	const std::vector<Microphone> mics = microphones();
+
+	QDialog dialog(this);
+	dialog.setWindowTitle(tr("Stream check"));
+
+	auto *intro = new QLabel(
+		tr("Three things that are usually only noticed afterwards, from a clip or from "
+		   "chat.\n\nThey appear in this dock, which nobody but you can see. Nothing is put on "
+		   "your stream, nothing is sent anywhere, and none of it is written down."),
+		&dialog);
+	intro->setWordWrap(true);
+
+	auto *muted = new QCheckBox(tr("Tell me if my microphone is muted while I am live"), &dialog);
+	muted->setChecked(settings.mic_muted);
+
+	auto *mic = new QComboBox(&dialog);
+
+	for (const Microphone &entry : mics) {
+		mic->addItem(entry.name, entry.uuid);
+	}
+
+	int micIndex = mic->findData(QString::fromStdString(settings.source_uuid));
+
+	if (micIndex < 0) {
+		micIndex = mic->findText(QString::fromStdString(settings.source_name));
+	}
+
+	/* Falling back to the microphone voice commands already use, which is the
+	 * one somebody who has set that up means here as well. Only as the opening
+	 * choice: what gets saved is whatever is in the box when they press OK. */
+	if (micIndex < 0) {
+		micIndex = mic->findData(QString::fromStdString(config().voice.source_uuid));
+	}
+
+	if (micIndex >= 0) {
+		mic->setCurrentIndex(micIndex);
+	}
+
+	mic->setEnabled(muted->isChecked());
+	connect(muted, &QCheckBox::toggled, mic, &QWidget::setEnabled);
+
+	auto *silence = new QCheckBox(tr("Tell me if nothing at all is audible on my stream"), &dialog);
+	silence->setChecked(settings.silence);
+
+	auto *forgotten = new QCheckBox(tr("Tell me if I am still live with nothing happening"), &dialog);
+	forgotten->setChecked(settings.forgotten);
+
+	/* The thresholds, said plainly. Somebody deciding whether to switch one of
+	 * these on is really deciding whether it will cry wolf at them, and that
+	 * question is only answerable if they are told the rule. */
+	auto *note = new QLabel(
+		tr("A muted microphone is flagged after a minute and a half, so coughing, taking a sip "
+		   "or turning to say something to the room never trips it.\n\nSilence is flagged after "
+		   "a minute with nothing audible anywhere in your mix, which is about twice the "
+		   "longest quiet stretch a stream makes on purpose. Game sound and music count, so it "
+		   "only fires when a viewer really is hearing nothing.\n\nStill live is flagged after "
+		   "half an hour with no sound and no scene change. Streaming quietly for hours never "
+		   "trips it, because any noise at all starts the clock again; raiding out and walking "
+		   "away does."),
+		&dialog);
+	note->setWordWrap(true);
+
+	auto *form = new QFormLayout;
+	form->addRow(muted);
+	form->addRow(tr("Microphone"), mic);
+	form->addRow(silence);
+	form->addRow(forgotten);
+
+	if (mics.empty()) {
+		auto *none = new QLabel(tr("No microphone in OBS yet. Add your mic as an audio source, then "
+					   "come back."),
+					&dialog);
+		none->setWordWrap(true);
+		form->addRow(none);
+	}
+
+	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+	connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+	connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+	auto *layout = new QVBoxLayout(&dialog);
+	layout->addWidget(intro);
+	layout->addLayout(form);
+	layout->addWidget(note);
+	layout->addWidget(buttons);
+
+	dialog.setMinimumWidth(460);
+
+	if (dialog.exec() != QDialog::Accepted) {
+		return;
+	}
+
+	settings.mic_muted = muted->isChecked();
+	settings.silence = silence->isChecked();
+	settings.forgotten = forgotten->isChecked();
+
+	if (mic->currentIndex() >= 0) {
+		settings.source_uuid = mic->currentData().toString().toStdString();
+		settings.source_name = mic->currentText().toStdString();
+	}
+
+	config().warnings = settings;
+	save_config();
+	warnings_apply();
+	refreshWarnings();
+}
+
+/* What the banner says, once a second, from wherever the update has got to.
+ *
+ * Hidden in the two stages that are nobody's business: nothing found, and a check
+ * in flight. A dock that flickers "checking for updates" every six hours is a
+ * dock people learn to ignore.
+ */
+void MultistreamDock::refreshUpdate()
+{
+	const UpdateStage stage = update_stage();
+	const UpdateOffer offer = update_offer();
+	const QString version = QString::fromStdString(offer.version);
+
+	QString text;
+	QString action;
+	bool enabled = true;
+	bool showNotes = true;
+
+	switch (stage) {
+	case UpdateStage::found:
+		text = tr("Version %1 is out.").arg(version);
+		action = tr("Update now");
+		break;
+
+	case UpdateStage::downloading:
+		text = tr("Getting version %1... %2%").arg(version).arg(offer.percent);
+		action = tr("Update now");
+		enabled = false;
+		break;
+
+	case UpdateStage::ready:
+		/* Restarting OBS is not something to offer somebody who is live, and
+		 * the update goes in when they close it anyway. */
+		if (obs_frontend_streaming_active() || obs_frontend_recording_active()) {
+			text = tr("Version %1 is ready. It goes in when you close OBS.").arg(version);
+			action = tr("Install and restart OBS");
+			enabled = false;
+		} else {
+			text = tr("Version %1 is ready.").arg(version);
+			action = tr("Install and restart OBS");
+		}
+		break;
+
+	case UpdateStage::manual:
+		text = tr("Version %1 is out.").arg(version);
+		action = tr("Open the download page");
+		break;
+
+	case UpdateStage::failed:
+		showNotes = false;
+
+		switch (update_problem()) {
+		case UpdateProblem::copy_failed:
+			text = tr("The update could not be copied into place. The plugin folder may "
+				  "belong to an administrator.");
+			action = tr("Open the download page");
+			break;
+
+		case UpdateProblem::no_answer:
+			text = tr("Could not reach PlasmaStream to check for updates.");
+			action = tr("Try again");
+			break;
+
+		default:
+			text = tr("The update could not be downloaded.");
+			action = tr("Open the download page");
+			break;
+		}
+
+		break;
+
+	default:
+		break;
+	}
+
+	if (text.isEmpty()) {
+		updateRow_->setVisible(false);
+		return;
+	}
+
+	updateText_->setText(text);
+	updateButton_->setText(action);
+	updateButton_->setEnabled(enabled);
+
+	QStringList notes;
+
+	if (showNotes) {
+		for (const std::string &note : offer.notes) {
+			notes << QString::fromStdString(note);
+		}
+	}
+
+	const QString joined = notes.join(QStringLiteral(" \u00b7 "));
+	updateNotes_->setText(joined);
+	updateNotes_->setVisible(!joined.isEmpty());
+	updateRow_->setVisible(true);
+}
+
+void MultistreamDock::updatePressed()
+{
+	const UpdateStage stage = update_stage();
+
+	if (stage == UpdateStage::found) {
+		update_download();
+		refreshUpdate();
+		return;
+	}
+
+	if (stage == UpdateStage::ready) {
+		update_install(true);
+
+		/* Closed the way its own window button closes it, so a running stream
+		 * is stopped and everything is saved. The script is already outside
+		 * waiting for this process to end, and it starts OBS again once the
+		 * files are in place. */
+		if (auto *main = static_cast<QWidget *>(obs_frontend_get_main_window())) {
+			QMetaObject::invokeMethod(main, "close", Qt::QueuedConnection);
+		}
+
+		return;
+	}
+
+	if (stage == UpdateStage::failed && update_problem() == UpdateProblem::no_answer) {
+		update_check(true);
+		refreshUpdate();
+		return;
+	}
+
+	const UpdateOffer offer = update_offer();
+	const std::string page = offer.page.empty() ? plasmastream_url("/multistream") : offer.page;
+	QDesktopServices::openUrl(QUrl(QString::fromStdString(page)));
 }
 
 void MultistreamDock::showOptions()
@@ -1375,9 +1784,23 @@ void MultistreamDock::showOptions()
 		verticalFit->setEnabled(false);
 	}
 
+	auto *updateCheck = new QCheckBox(tr("Tell me when a new version of this plugin is out"), &dialog);
+	updateCheck->setChecked(config().update.check);
+
+	auto *updateAuto = new QCheckBox(tr("And fetch it in the background, ready to go in when OBS closes"),
+					 &dialog);
+	updateAuto->setChecked(config().update.automatic);
+	updateAuto->setEnabled(config().update.check);
+	connect(updateCheck, &QCheckBox::toggled, updateAuto, &QWidget::setEnabled);
+
+	auto *checkNow = new QPushButton(tr("Check now"), &dialog);
+	connect(checkNow, &QPushButton::clicked, this, []() { update_check(true); });
+
 	auto *note = new QLabel(
 		tr("Reconnect settings apply to the destinations this plugin sends to. Your main "
-		   "stream keeps whatever is set in OBS's own settings."),
+		   "stream keeps whatever is set in OBS's own settings.\n\n"
+		   "An update is put in place after OBS closes, because OBS holds the plugin open "
+		   "while it runs. Nothing is replaced during a stream."),
 		&dialog);
 	note->setWordWrap(true);
 
@@ -1387,6 +1810,9 @@ void MultistreamDock::showOptions()
 	form->addRow(QString(), sync);
 	form->addRow(tr("Vertical size"), verticalSize);
 	form->addRow(tr("Vertical framing"), verticalFit);
+	form->addRow(tr("Updates"), updateCheck);
+	form->addRow(QString(), updateAuto);
+	form->addRow(QString(), checkNow);
 
 	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
 					     &dialog);
@@ -1405,6 +1831,8 @@ void MultistreamDock::showOptions()
 	config().reconnect_retries = retries->value();
 	config().reconnect_delay_sec = delay->value();
 	config().sync_on_launch = sync->isChecked();
+	config().update.check = updateCheck->isChecked();
+	config().update.automatic = updateAuto->isChecked();
 	config().vertical_crop = verticalFit->currentData().toBool();
 
 	const QSize portrait = verticalSize->currentData().toSize();
@@ -1577,6 +2005,8 @@ void MultistreamDock::refreshStatuses()
 {
 	refreshRecording();
 	refreshVoice();
+	refreshWarnings();
+	refreshUpdate();
 
 	const std::vector<OutputStatus> statuses = output_statuses();
 

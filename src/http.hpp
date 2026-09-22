@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <functional>
 #include <string>
 
 namespace plasmastream {
@@ -43,6 +44,17 @@ HttpResponse http_get(const std::string &url);
  * caller's, because a voice command nobody hears back about in six seconds is
  * better dropped than waited on. */
 HttpResponse http_post_json(const std::string &url, const std::string &json, long timeout_sec = 15);
+
+/* Downloads a URL to a file, which is the one request here that can be large
+ * enough to be worth watching. `progress` is called as it goes with how far
+ * along it is, 0 to 1, and returning false from it cancels the download; a
+ * cancelled or failed download leaves no file behind. Blocking, like the rest.
+ *
+ * No overall timeout, because a hundred megabytes over a bad connection is slow
+ * rather than broken. What it does give up on is a transfer moving under a
+ * trickle for half a minute, which is broken rather than slow. */
+bool http_download(const std::string &url, const std::string &path,
+		   const std::function<bool(double)> &progress);
 
 /* A PlasmaStream address, e.g. plasmastream_url("/api/plugin/abc").
  *

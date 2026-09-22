@@ -115,6 +115,28 @@ ships its own ONNX Runtime cannot overwrite them. If one has already loaded its
 copy, voice commands stay off and the dock says why, rather than risk crashing
 OBS.
 
+### Stream check
+
+Three things that are usually only noticed afterwards, from a clip or from chat:
+your microphone was muted the whole segment, nothing at all was going out, or the
+stream was still running an hour after you raided out and left. Press **Stream
+check** in the dock and switch on the ones you want. All three are off until you
+ask for them, and each is its own switch.
+
+They appear in the dock and nowhere else. Nothing is drawn on your stream,
+nothing is sent to PlasmaStream, and none of it is recorded.
+
+Each one waits until it is sure. A muted microphone is flagged after a minute and
+a half, which is past coughing, taking a sip or turning to say something to the
+room. Silence is flagged after a minute with nothing audible anywhere in your
+mix, so game sound and music count and it only fires when a viewer really is
+hearing nothing. Still live is flagged after half an hour with no sound and no
+scene change, so streaming quietly never trips it, because any noise at all
+starts the clock again.
+
+The thresholds are deliberately generous. A warning that is wrong once is a
+warning you stop reading, including on the night it is right.
+
 ### Twitch Enhanced Broadcasting
 
 If your main stream is using it, OBS is producing a ladder of several encodings
@@ -138,6 +160,49 @@ If that is what you need, Aitum Vertical does it and is free.
 There is also no replay buffer on either the vertical canvas or the scene
 recording, and no hotkeys beyond voice push-to-talk: everything else is driven
 from the docks.
+
+## Updating
+
+The plugin asks https://plasmastream.live/api/plugin/update, twenty seconds after
+OBS starts and every six hours after that, whether there is a newer version than
+the one running. The request carries nothing: no token, no channel, no machine
+identifier. Everyone who asks gets the same answer, and the check can be switched
+off in **Options**.
+
+When there is one, the dock says so and offers a button.
+
+- **Update now** downloads the new version and unpacks it beside the installed
+  one, under `%LOCALAPPDATA%\PlasmaStream\update`. Nothing is replaced yet.
+- **Install and restart OBS** hands the swap to a small script, asks OBS to close,
+  and starts it again once the files are in place.
+- Closing OBS normally does the same thing without the restart, so an update that
+  was downloaded and forgotten about goes in the next time OBS shuts down.
+
+The swap happens after OBS exits because it has to: OBS holds the plugin DLL open
+for as long as it runs, so nothing can replace it while OBS is up. The script
+waits for this OBS process to end, copies the unpacked folder over the installed
+one with robocopy, and leaves a one line result the plugin reads at the next
+start. An update that could not be copied says so in the dock rather than
+silently not happening.
+
+**Options** also has *fetch it in the background*, which does the download part on
+its own so the only thing left is closing OBS. It is off by default.
+
+What it will not do:
+
+- Install anything that needs a password. The macOS package and the Linux .deb
+  are the system's business, so on those platforms the dock offers the download
+  page instead.
+- Touch an install it does not recognize. It replaces a plugin living in the
+  layout the Windows zip produces, `<plugins>\plasmastream-multistream\bin\64bit`,
+  and offers the download page for anything else, which includes a build you
+  placed by hand.
+
+Three Windows archives are published per release: the full one, the same build
+without the speech models, and the models on their own. An install whose models
+already match the release takes the middle one, which is around twenty megabytes
+rather than a hundred and forty. Which models an install has is written in
+`data/voice/models/models.txt` by the build that put them there.
 
 ## Your stream keys stay on your computer
 
@@ -251,6 +316,21 @@ git push https://github.com/HoutenXD/plasmastream-multistream.git plugin-public:
 Nothing else from the monorepo travels with it: `subtree split` rebuilds a
 history containing only commits that touched this directory, and only the files
 inside it.
+
+`subtree split` walks the whole history and has crashed partway through on a
+large one. When it does, export the release commit on its own instead, which
+produces the same tree:
+
+```
+git format-patch -1 <sha> --relative=plugin/obs-multistream --stdout > /tmp/plugin.patch
+git -C <clone of the public repo> am /tmp/plugin.patch
+```
+
+Then prove the two agree before pushing, which should print nothing:
+
+```
+git diff --stat main:plugin/obs-multistream <public head>^{tree}
+```
 
 ## License
 
