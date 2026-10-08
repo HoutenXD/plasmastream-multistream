@@ -25,6 +25,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cstring>
 
 #include <callback/calldata.h>
+#include <callback/proc.h>
 #include <callback/signal.h>
 
 #include <graphics/vec2.h>
@@ -47,7 +48,14 @@ struct Recording {
 
 	obs_output_t *output = nullptr;
 	obs_encoder_t *video = nullptr;
-	obs_encoder_t *audio = nullptr;
+
+	/* One per recorded track, in track order, each becoming its own track in
+	 * the file. */
+	std::vector<obs_encoder_t *> audio;
+
+	/* Whether the output can take chapter markers itself. Only OBS's Hybrid MP4
+	 * can; everything else gets them in the chapters file alone. */
+	bool chapters_native = false;
 
 	std::string file;
 
@@ -166,10 +174,12 @@ void release_all()
 		g_rec.video = nullptr;
 	}
 
-	if (g_rec.audio) {
-		obs_encoder_release(g_rec.audio);
-		g_rec.audio = nullptr;
+	for (obs_encoder_t *encoder : g_rec.audio) {
+		obs_encoder_release(encoder);
 	}
+
+	g_rec.audio.clear();
+	g_rec.chapters_native = false;
 
 	if (g_rec.canvas) {
 		/* Clearing the channel is what gives the scene its activation back;
@@ -427,31 +437,59 @@ bool scene_recording_start()
 					       encoder_settings, nullptr);
 	obs_data_release(encoder_settings);
 
-	obs_data_t *audio_settings = obs_data_create();
-	obs_data_set_int(audio_settings, "bitrate", 192);
+	const bool hybrid_mp4 = settings.format == "mp4";
 
-	/* OBS numbers tracks from one in the interface and from zero in the API. */
-	const size_t track = static_cast<size_t>(settings.audio_track > 0 ? settings.audio_track - 1 : 0);
+	/* Lossless is PCM, which mkv and mov carry and every editor reads. Hybrid
+	 * MP4 takes AAC: the lossless codecs it could hold are FLAC and ALAC, and
+	 * most editors refuse both inside an mp4, so asking for lossless there would
+	 * make a file nobody can cut. The dialog says so; this is the backstop. */
+	const char *audio_kind = settings.lossless_audio && !hybrid_mp4 ? "ffmpeg_pcm_s24le" : "ffmpeg_aac";
 
-	g_rec.audio = obs_audio_encoder_create("ffmpeg_aac", "PlasmaStream recording audio",
-					       audio_settings, track, nullptr);
-	obs_data_release(audio_settings);
+	for (const int track : settings.audio_tracks) {
+		if (track < 1 || track > 6 || g_rec.audio.size() >= MAX_OUTPUT_AUDIO_ENCODERS) {
+			continue;
+		}
 
-	if (!g_rec.video || !g_rec.audio) {
+		obs_data_t *audio_settings = obs_data_create();
+		obs_data_set_int(audio_settings, "bitrate", 192);
+
+		/* The encoder's name is what the muxer writes as the track's title, in
+		 * mkv, mov and mp4 alike, which is how an editor comes to show "Mic"
+		 * rather than "Audio 2". OBS numbers tracks from one in the interface and
+		 * from zero in the API. */
+		const std::string name = recording_track_name(settings, track);
+
+		obs_encoder_t *encoder = obs_audio_encoder_create(audio_kind, name.c_str(), audio_settings,
+								  static_cast<size_t>(track - 1), nullptr);
+		obs_data_release(audio_settings);
+
+		if (!encoder) {
+			blog(LOG_WARNING, "[plasmastream] could not build a %s encoder for track %d", audio_kind, track);
+			continue;
+		}
+
+		obs_encoder_set_audio(encoder, obs_get_audio());
+		g_rec.audio.push_back(encoder);
+	}
+
+	if (!g_rec.video || g_rec.audio.empty()) {
 		blog(LOG_WARNING, "[plasmastream] could not build encoders for the scene recording");
 		release_all();
 		return false;
 	}
 
 	/* The canvas is what makes this a different picture; the audio is the same
-	 * mix the stream hears, because nobody asked for a different one. */
+	 * mixes the stream's tracks carry, because nobody asked for different ones. */
 	obs_encoder_set_video(g_rec.video, obs_canvas_get_video(g_rec.canvas));
-	obs_encoder_set_audio(g_rec.audio, obs_get_audio());
 
 	obs_data_t *output_settings = obs_data_create();
 	obs_data_set_string(output_settings, "path", g_rec.file.c_str());
 
-	g_rec.output = obs_output_create("ffmpeg_muxer", "PlasmaStream recording",
+	/* Hybrid MP4 is OBS's own mp4 writer, the one its Hybrid MP4 setting uses: it
+	 * survives a crash the way mkv does, opens straight in an editor, and is the
+	 * only output that takes chapter markers. Everything else goes through ffmpeg,
+	 * which picks the container from the extension. */
+	g_rec.output = obs_output_create(hybrid_mp4 ? "mp4_output" : "ffmpeg_muxer", "PlasmaStream recording",
 					 output_settings, nullptr);
 	obs_data_release(output_settings);
 
@@ -460,8 +498,13 @@ bool scene_recording_start()
 		return false;
 	}
 
+	g_rec.chapters_native = hybrid_mp4;
+
 	obs_output_set_video_encoder(g_rec.output, g_rec.video);
-	obs_output_set_audio_encoder(g_rec.output, g_rec.audio, 0);
+
+	for (size_t i = 0; i < g_rec.audio.size(); i++) {
+		obs_output_set_audio_encoder(g_rec.output, g_rec.audio[i], i);
+	}
 
 	if (!obs_output_start(g_rec.output)) {
 		const char *error = obs_output_get_last_error(g_rec.output);
@@ -481,8 +524,9 @@ bool scene_recording_start()
 
 	/* The encoder goes in the log as well, because "the file will not open" is
 	 * almost always a question about the codec, and this line answers it. */
-	blog(LOG_INFO, "[plasmastream] recording scene '%s' to %s with %s (%s)", settings.scene.c_str(),
-	     g_rec.file.c_str(), kind.c_str(), codec_of(kind.c_str()).c_str());
+	blog(LOG_INFO, "[plasmastream] recording scene '%s' to %s with %s (%s), %zu audio track(s) as %s",
+	     settings.scene.c_str(), g_rec.file.c_str(), kind.c_str(), codec_of(kind.c_str()).c_str(),
+	     g_rec.audio.size(), audio_kind);
 
 	/* And every sound that will be missing from it, for the same reason: a video
 	 * with no game audio is found out long after the stream, and the log is where
@@ -701,6 +745,62 @@ std::vector<std::string> scene_audio_missing_from_recording(const std::string &s
 
 	obs_source_release(recorded);
 	return missing;
+}
+
+std::string obs_track_name(int track)
+{
+	if (track < 1 || track > 6) {
+		return {};
+	}
+
+	/* Only the Advanced output mode names its tracks; Simple mode has none. */
+	config_t *profile = obs_frontend_get_profile_config();
+	const std::string key = "Track" + std::to_string(track) + "Name";
+	const char *name = profile ? config_get_string(profile, "AdvOut", key.c_str()) : nullptr;
+
+	return name ? std::string(name) : std::string();
+}
+
+std::string recording_track_name(const SceneRecording &settings, int track)
+{
+	if (track >= 1 && track <= 6 && !settings.track_names[track - 1].empty()) {
+		return settings.track_names[track - 1];
+	}
+
+	const std::string from_obs = obs_track_name(track);
+
+	return from_obs.empty() ? "Track " + std::to_string(track) : from_obs;
+}
+
+bool scene_recording_add_chapter(const std::string &name)
+{
+	std::lock_guard<std::mutex> lock(g_mutex);
+
+	if (!g_rec.running || !g_rec.output || !g_rec.chapters_native) {
+		return false;
+	}
+
+	calldata_t data;
+	calldata_init(&data);
+	calldata_set_string(&data, "chapter_name", name.c_str());
+
+	const bool added = proc_handler_call(obs_output_get_proc_handler(g_rec.output), "add_chapter", &data);
+
+	calldata_free(&data);
+	return added;
+}
+
+bool scene_recording_marker_target(std::string &file, uint64_t &started_ns)
+{
+	std::lock_guard<std::mutex> lock(g_mutex);
+
+	if (!g_rec.running || g_rec.file.empty()) {
+		return false;
+	}
+
+	file = g_rec.file;
+	started_ns = g_rec.started_ns;
+	return true;
 }
 
 obs_canvas_t *scene_recording_canvas()

@@ -64,6 +64,11 @@ private slots:
 	void setUpRecording();
 	void toggleRecording();
 
+	/* Chapter markers: which moments from PlasmaStream become chapters, and a
+	 * button to mark one by hand. */
+	void setUpMarkers();
+	void addMarker();
+
 	/* Voice commands: pick the microphone and how to listen. The phrases
 	 * themselves are set on the website, so this stays short. */
 	void setUpVoice();
@@ -100,6 +105,12 @@ private:
 	QLabel *recordingState_ = nullptr;
 	QPushButton *recordingSetUp_ = nullptr;
 	QPushButton *recordingToggle_ = nullptr;
+
+	void refreshMarkers();
+
+	QLabel *markersState_ = nullptr;
+	QPushButton *markersAdd_ = nullptr;
+	QPushButton *markersSetUp_ = nullptr;
 
 	void refreshVoice();
 	void refreshUpdate();

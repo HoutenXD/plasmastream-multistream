@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "config.hpp"
 #include "dock.hpp"
 #include "http.hpp"
+#include "markers.hpp"
 #include "outputs.hpp"
 #include "scenerec.hpp"
 #include "update.hpp"
@@ -38,6 +39,10 @@ namespace {
 
 void on_frontend_event(enum obs_frontend_event event, void *)
 {
+	/* OBS's own recording starting, pausing and stopping, so chapter markers
+	 * land in it at the right moment. It ignores everything else. */
+	plasmastream::markers_frontend_event(event);
+
 	switch (event) {
 	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
 		/* The transcript's gate. Nothing said before this moment was kept, and
@@ -79,6 +84,8 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 		 * the microphone is let go before its source is destroyed. */
 		plasmastream::voice_save_hotkey();
 		plasmastream::voice_shutdown();
+		plasmastream::markers_save_hotkey();
+		plasmastream::markers_shutdown();
 
 		/* The audio tap comes off before libobs tears its mix down, for the
 		 * same reason the microphone does. */
@@ -135,6 +142,7 @@ bool obs_module_load(void)
 	plasmastream::http_init();
 	plasmastream::load_config();
 	plasmastream::voice_init();
+	plasmastream::markers_init();
 	plasmastream::update_init();
 
 	obs_frontend_add_event_callback(on_frontend_event, nullptr);
@@ -153,6 +161,7 @@ void obs_module_unload(void)
 	 * enough on its own. */
 	plasmastream::stop_outputs();
 	plasmastream::voice_shutdown();
+	plasmastream::markers_shutdown();
 	plasmastream::warnings_shutdown();
 
 	/* Before the rest of the teardown: an update that was downloaded and never

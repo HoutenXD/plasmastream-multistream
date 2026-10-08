@@ -87,9 +87,49 @@ format you already set. It does not touch OBS's own Start Recording button;
 both can run at the same time.
 
 It encodes separately, for the same reason vertical does, so it costs one more
-encode. Bitrate, encoder, container and which of OBS's six audio tracks to take
-are all settable. mkv is the default because it survives a crash with the
-footage intact.
+encode. Bitrate, encoder and container are all settable. mkv is the default
+because it survives a crash with the footage intact. mp4 is OBS's Hybrid MP4,
+which survives a crash too and opens straight in an editor. mov is there for
+lossless audio in an editor.
+
+#### Several audio tracks
+
+Tick any of OBS's six audio tracks and each becomes its own track in the file,
+named however you like, so your microphone, Discord and the game arrive in your
+editor as separate tracks to cut and level on their own. The dialog shows who is
+on each track, and warns about a ticked track with nothing on it.
+
+Most people have never put a source on its own track, so **Give a source its own
+track** does it for you: pick the sound and it is ticked onto a spare track in
+OBS's Advanced Audio Properties and named after itself. It only ever adds a
+track, never takes one away, so your stream sounds exactly as it did. It also
+leaves Twitch's VOD track alone.
+
+**Lossless audio** records uncompressed 24-bit sound instead of AAC, in mkv and
+mov. Hybrid MP4 stays on AAC, because the lossless codecs it could carry are ones
+most editors refuse inside an mp4.
+
+### Chapter markers
+
+While anything is recording, the moments worth finding again become chapters:
+raids, subs and memberships, cheers of 100 bits or more, donations and Super
+Chats, and the game changing. PlasmaStream's bot sees each one as it happens and
+the plugin collects them, so this needs your PlasmaStream key.
+
+They go into OBS's own recording and into the scene recording, two ways:
+
+- A chapters file beside every recording, named like the video with
+  `.chapters.txt` on the end, one line per moment: `12:34 Raid: Mr_Dino_Saur_, 42
+  viewers`. It works with any format, and pastes straight into a YouTube
+  description. Each line sits where the moment happened, with any pause in OBS's
+  recording taken out.
+- Chapters inside the file itself, when the file is a Hybrid MP4, the one format
+  OBS can write chapters into. Players and some editors show them.
+
+To mark a moment yourself: press **Mark** in the dock, set a key for
+"PlasmaStream: add a chapter marker" in OBS Settings > Hotkeys, or have a
+moderator type `!marker` in chat with what happened after it. **Markers...**
+chooses which kinds of moment go in.
 
 ### Voice commands
 
@@ -158,8 +198,8 @@ whole wide composition is a single element.
 If that is what you need, Aitum Vertical does it and is free.
 
 There is also no replay buffer on either the vertical canvas or the scene
-recording, and no hotkeys beyond voice push-to-talk: everything else is driven
-from the docks.
+recording, and the only hotkeys are voice push-to-talk and adding a chapter
+marker: everything else is driven from the docks.
 
 ## Updating
 

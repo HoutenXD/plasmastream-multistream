@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include "config.hpp"
 #include "outputs.hpp"
 
 #include <cstdint>
@@ -99,6 +100,23 @@ bool scene_recording_supported();
  * this would rather miss a warning than give one about a setup that works. */
 std::vector<std::string> scene_audio_missing_from_recording(const std::string &scene);
 
+/* OBS's own name for one of its six audio tracks, from Settings > Output in
+ * Advanced mode. Empty when it has none, which Simple mode never does. */
+std::string obs_track_name(int track);
+
+/* What a recorded track is called inside the file: the name given in the
+ * recording dialog, else OBS's own, else "Track N". */
+std::string recording_track_name(const SceneRecording &settings, int track);
+
+/* Puts a chapter marker into the running recording at this moment. False when
+ * nothing is recording, or the recording is not a Hybrid MP4, the one format OBS
+ * can write chapters into. */
+bool scene_recording_add_chapter(const std::string &name);
+
+/* The file being written and when it started, by os_gettime_ns, for the chapters
+ * file written beside it. False when nothing is recording. */
+bool scene_recording_marker_target(std::string &file, uint64_t &started_ns);
+
 /* Borrowed, for a preview. Null unless a recording is running. */
 obs_canvas_t *scene_recording_canvas();
 
@@ -115,6 +133,10 @@ inline SceneRecordingStatus scene_recording_status() { return {}; }
 inline bool scene_recording_supported() { return false; }
 inline std::vector<std::string> scene_audio_missing_from_recording(const std::string &) { return {}; }
 inline void scene_recording_shutdown() {}
+inline std::string obs_track_name(int) { return {}; }
+inline std::string recording_track_name(const SceneRecording &, int track) { return "Track " + std::to_string(track); }
+inline bool scene_recording_add_chapter(const std::string &) { return false; }
+inline bool scene_recording_marker_target(std::string &, uint64_t &) { return false; }
 
 #endif
 

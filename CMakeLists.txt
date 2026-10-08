@@ -59,6 +59,8 @@ target_sources(
     src/dock.hpp
     src/http.cpp
     src/http.hpp
+    src/markers.cpp
+    src/markers.hpp
     src/outputs.cpp
     src/outputs.hpp
     src/preview.cpp

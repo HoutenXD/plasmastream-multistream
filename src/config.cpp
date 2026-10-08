@@ -209,6 +209,7 @@ void load_config()
 		obs_data_set_default_int(recording, "video_bitrate", 8000);
 		obs_data_set_default_string(recording, "format", "mkv");
 		obs_data_set_default_int(recording, "audio_track", 1);
+		obs_data_set_default_bool(recording, "lossless_audio", false);
 
 		g_config.scene_recording.enabled = obs_data_get_bool(recording, "enabled");
 		g_config.scene_recording.scene = obs_data_get_string(recording, "scene");
@@ -218,17 +219,68 @@ void load_config()
 			static_cast<int>(obs_data_get_int(recording, "video_bitrate"));
 		g_config.scene_recording.encoder_id = obs_data_get_string(recording, "encoder_id");
 		g_config.scene_recording.format = obs_data_get_string(recording, "format");
-		g_config.scene_recording.audio_track =
-			static_cast<int>(obs_data_get_int(recording, "audio_track"));
+		/* Several tracks are kept as a bitmask, track 1 in the lowest bit. A
+		 * config from before there could be several has only the one track
+		 * number, which becomes a mask of one. */
+		int64_t mask = obs_data_get_int(recording, "audio_tracks_mask");
 
-		/* A track outside OBS's six would be asked of the audio encoder and
-		 * quietly produce a recording with no sound. */
-		if (g_config.scene_recording.audio_track < 1 ||
-		    g_config.scene_recording.audio_track > 6) {
-			g_config.scene_recording.audio_track = 1;
+		if (!obs_data_has_user_value(recording, "audio_tracks_mask")) {
+			const int64_t track = obs_data_get_int(recording, "audio_track");
+			mask = track >= 1 && track <= 6 ? (1LL << (track - 1)) : 1;
+		}
+
+		g_config.scene_recording.audio_tracks.clear();
+
+		for (int track = 1; track <= 6; track++) {
+			if (mask & (1LL << (track - 1))) {
+				g_config.scene_recording.audio_tracks.push_back(track);
+			}
+		}
+
+		/* No tracks at all would make an encoder-less recording, which either
+		 * refuses to start or has no sound. Track 1 is the safe reading. */
+		if (g_config.scene_recording.audio_tracks.empty()) {
+			g_config.scene_recording.audio_tracks.push_back(1);
+		}
+
+		for (int track = 1; track <= 6; track++) {
+			const std::string key = "track_name_" + std::to_string(track);
+			g_config.scene_recording.track_names[track - 1] =
+				obs_data_get_string(recording, key.c_str());
+		}
+
+		g_config.scene_recording.lossless_audio = obs_data_get_bool(recording, "lossless_audio");
+
+		/* A file type this build does not know would be handed to the muxer as
+		 * an extension it may not be able to write. */
+		const std::string &format = g_config.scene_recording.format;
+
+		if (format != "mkv" && format != "mp4" && format != "mov") {
+			g_config.scene_recording.format = "mkv";
 		}
 
 		obs_data_release(recording);
+	}
+
+	g_config.markers = MarkerSettings();
+	obs_data_t *markers = obs_data_get_obj(data, "markers");
+
+	/* Absent means everything on, which is what MarkerSettings already is. */
+	if (markers) {
+		obs_data_set_default_bool(markers, "enabled", true);
+		obs_data_set_default_bool(markers, "raids", true);
+		obs_data_set_default_bool(markers, "subs", true);
+		obs_data_set_default_bool(markers, "money", true);
+		obs_data_set_default_bool(markers, "games", true);
+
+		g_config.markers.enabled = obs_data_get_bool(markers, "enabled");
+		g_config.markers.raids = obs_data_get_bool(markers, "raids");
+		g_config.markers.subs = obs_data_get_bool(markers, "subs");
+		g_config.markers.money = obs_data_get_bool(markers, "money");
+		g_config.markers.games = obs_data_get_bool(markers, "games");
+		g_config.markers.hotkey = obs_data_get_string(markers, "hotkey");
+
+		obs_data_release(markers);
 	}
 
 	g_config.voice = VoiceConfig();
@@ -412,9 +464,41 @@ void save_config()
 	obs_data_set_int(recording, "video_bitrate", g_config.scene_recording.video_bitrate);
 	obs_data_set_string(recording, "encoder_id", g_config.scene_recording.encoder_id.c_str());
 	obs_data_set_string(recording, "format", g_config.scene_recording.format.c_str());
-	obs_data_set_int(recording, "audio_track", g_config.scene_recording.audio_track);
+	int64_t mask = 0;
+
+	for (const int track : g_config.scene_recording.audio_tracks) {
+		if (track >= 1 && track <= 6) {
+			mask |= 1LL << (track - 1);
+		}
+	}
+
+	obs_data_set_int(recording, "audio_tracks_mask", mask == 0 ? 1 : mask);
+
+	/* Still written, as the first track, so going back to an older plugin finds
+	 * the setting it knows and records one of the right tracks rather than none. */
+	obs_data_set_int(recording, "audio_track",
+			 g_config.scene_recording.audio_tracks.empty() ? 1
+								 : g_config.scene_recording.audio_tracks.front());
+
+	for (int track = 1; track <= 6; track++) {
+		const std::string key = "track_name_" + std::to_string(track);
+		obs_data_set_string(recording, key.c_str(),
+				    g_config.scene_recording.track_names[track - 1].c_str());
+	}
+
+	obs_data_set_bool(recording, "lossless_audio", g_config.scene_recording.lossless_audio);
 	obs_data_set_obj(data, "scene_recording", recording);
 	obs_data_release(recording);
+
+	obs_data_t *markers = obs_data_create();
+	obs_data_set_bool(markers, "enabled", g_config.markers.enabled);
+	obs_data_set_bool(markers, "raids", g_config.markers.raids);
+	obs_data_set_bool(markers, "subs", g_config.markers.subs);
+	obs_data_set_bool(markers, "money", g_config.markers.money);
+	obs_data_set_bool(markers, "games", g_config.markers.games);
+	obs_data_set_string(markers, "hotkey", g_config.markers.hotkey.c_str());
+	obs_data_set_obj(data, "markers", markers);
+	obs_data_release(markers);
 
 	obs_data_t *voice = obs_data_create();
 	obs_data_set_bool(voice, "enabled", g_config.voice.enabled);

@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -91,13 +92,54 @@ struct SceneRecording {
 	/* Empty means the same kind of encoder the main stream is using. */
 	std::string encoder_id;
 
-	/* Container. mkv survives a crash with the footage intact, which is why OBS
-	 * recommends it; mp4 goes straight into an editor. */
+	/* Container.
+	 *
+	 * mkv survives a crash with the footage intact, which is why OBS recommends
+	 * it, but most editors want it remuxed first. mp4 is OBS's Hybrid MP4: it
+	 * survives a crash too, opens straight in an editor, and is the only one
+	 * OBS can write chapter markers into. mov is for lossless audio in an editor,
+	 * and does not survive a crash. */
 	std::string format = "mkv";
 
-	/* Which of OBS's six audio tracks to record, 1 based. Track 1 is what the
-	 * stream hears; a different one is how people keep music off the recording. */
-	int audio_track = 1;
+	/* Which of OBS's six audio tracks to record, 1 based, ascending, each as a
+	 * separate track in the file.
+	 *
+	 * Track 1 is usually what the stream hears. The others are how somebody
+	 * ends up with their microphone, their Discord and their game as separate
+	 * tracks to cut and level apart when they edit. Never empty: a recording
+	 * with no sound is never what anybody meant. */
+	std::vector<int> audio_tracks = {1};
+
+	/* What each track is called inside the file, which is the name an editor
+	 * shows instead of "Audio 2". Indexed by track - 1. Empty means OBS's own
+	 * name for the track if it has one, and "Track N" if not. */
+	std::array<std::string, 6> track_names;
+
+	/* Uncompressed 24-bit audio rather than AAC, for somebody who will edit the
+	 * sound. mkv and mov only: Hybrid MP4 takes AAC, and the lossless codecs it
+	 * could carry are ones most editors refuse inside an mp4. */
+	bool lossless_audio = false;
+};
+
+/* Chapter markers in recordings.
+ *
+ * PlasmaStream writes down the moments worth finding again: raids, subs, big
+ * cheers and donations, the game changing, and !marker in chat. While anything is
+ * recording, the plugin collects them and marks them in the recording, along with
+ * any added from the hotkey or the dock. A chapter inside a Hybrid MP4, and a line
+ * in a chapters file beside every recording whatever its format. */
+struct MarkerSettings {
+	bool enabled = true;
+
+	/* Which kinds of moment become a chapter. A marker somebody asked for, from
+	 * the hotkey, the dock or !marker, always does. */
+	bool raids = true;
+	bool subs = true;
+	bool money = true;
+	bool games = true;
+
+	/* The key binding, as OBS serialises it. OBS keeps no copy for a plugin. */
+	std::string hotkey;
 };
 
 /* Voice commands: the streamer talks, and the words after the wake phrase go to
@@ -238,6 +280,9 @@ struct Config {
 
 	/* Record a scene other than the one going out. */
 	SceneRecording scene_recording;
+
+	/* Chapter markers in this recording and in OBS's own. */
+	MarkerSettings markers;
 
 	/* Voice commands through PlasmaStream. */
 	VoiceConfig voice;

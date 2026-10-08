@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "config.hpp"
 #include "http.hpp"
+#include "markers.hpp"
 #include "update.hpp"
 #include "outputs.hpp"
 #include "scenerec.hpp"
@@ -44,6 +45,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QHBoxLayout>
 #include <QFileDialog>
 #include <QFrame>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -66,6 +68,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
+#include <util/config-file.h>
 #include <util/platform.h>
 
 namespace plasmastream {
@@ -523,6 +526,20 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	connect(recordingSetUp_, &QPushButton::clicked, this, &MultistreamDock::setUpRecording);
 	connect(recordingToggle_, &QPushButton::clicked, this, &MultistreamDock::toggleRecording);
 
+	markersState_ = new QLabel(this);
+	markersState_->setTextFormat(Qt::PlainText);
+	markersState_->setWordWrap(true);
+
+	/* "Mark", not "Add marker": it sits beside the line saying how many there
+	 * are, and the dock is narrow. */
+	markersAdd_ = new QPushButton(tr("Mark"), this);
+	markersAdd_->setToolTip(tr("Add a chapter marker at this moment in everything recording. There is a "
+				   "hotkey for this too, in OBS Settings > Hotkeys."));
+	markersSetUp_ = new QPushButton(tr("Markers..."), this);
+
+	connect(markersAdd_, &QPushButton::clicked, this, &MultistreamDock::addMarker);
+	connect(markersSetUp_, &QPushButton::clicked, this, &MultistreamDock::setUpMarkers);
+
 	voiceState_ = new QLabel(this);
 	voiceState_->setTextFormat(Qt::PlainText);
 	voiceState_->setWordWrap(true);
@@ -577,6 +594,12 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	recordingRow->addWidget(recordingToggle_);
 	layout->addLayout(recordingRow);
 
+	auto *markersRow = new QHBoxLayout;
+	markersRow->addWidget(markersState_, 1);
+	markersRow->addWidget(markersAdd_);
+	markersRow->addWidget(markersSetUp_);
+	layout->addLayout(markersRow);
+
 	layout->addWidget(divider(this));
 
 	auto *voiceRow = new QHBoxLayout;
@@ -617,6 +640,7 @@ MultistreamDock::MultistreamDock(QWidget *parent) : QWidget(parent)
 	rebuildTable();
 	updateButtons();
 	refreshRecording();
+	refreshMarkers();
 	refreshVoice();
 	refreshWarnings();
 	refreshUpdate();
@@ -803,6 +827,182 @@ void MultistreamDock::changeToken()
  * has to be told exists: OBS records the programme, so today the choice is a
  * clean recording or a stream with a chat box, and this is how you stop
  * choosing. */
+namespace {
+
+/* Output mode, which decides where OBS keeps its track settings. */
+bool advanced_output()
+{
+	config_t *profile = obs_frontend_get_profile_config();
+	const char *mode = profile ? config_get_string(profile, "Output", "Mode") : nullptr;
+
+	return mode && strcmp(mode, "Advanced") == 0;
+}
+
+/* Which of OBS's six tracks the stream sends. Simple mode always sends track 1. */
+int stream_track()
+{
+	config_t *profile = obs_frontend_get_profile_config();
+
+	if (!profile || !advanced_output()) {
+		return 1;
+	}
+
+	const int track = static_cast<int>(config_get_int(profile, "AdvOut", "TrackIndex"));
+	return track >= 1 && track <= 6 ? track : 1;
+}
+
+/* Twitch's VOD track, when one is switched on: everything but the music, so never
+ * a free track for somebody's microphone however empty it looks. Simple mode puts
+ * it on track 2. Zero when there is none. */
+int vod_track()
+{
+	config_t *profile = obs_frontend_get_profile_config();
+
+	if (!profile) {
+		return 0;
+	}
+
+	if (!advanced_output()) {
+		return config_get_bool(profile, "SimpleOutput", "VodTrackEnabled") ? 2 : 0;
+	}
+
+	if (!config_get_bool(profile, "AdvOut", "VodTrackEnabled")) {
+		return 0;
+	}
+
+	const int track = static_cast<int>(config_get_int(profile, "AdvOut", "VodTrackIndex"));
+	return track >= 1 && track <= 6 ? track : 0;
+}
+
+struct AudioSource {
+	std::string name;
+	uint32_t mixers = 0;
+};
+
+bool collect_audio(void *param, obs_source_t *source)
+{
+	auto &list = *static_cast<std::vector<AudioSource> *>(param);
+
+	if ((obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO) == 0) {
+		return true;
+	}
+
+	const char *name = obs_source_get_name(source);
+
+	if (!name || !*name) {
+		return true;
+	}
+
+	for (const AudioSource &already : list) {
+		if (already.name == name) {
+			return true;
+		}
+	}
+
+	list.push_back({name, obs_source_get_audio_mixers(source)});
+	return true;
+}
+
+/* Everything that makes a sound, with the tracks each is on: the sources in
+ * scenes, and the microphone and desktop audio OBS mixes in on its own. */
+std::vector<AudioSource> audio_sources()
+{
+	std::vector<AudioSource> list;
+	obs_enum_sources(collect_audio, &list);
+
+	for (uint32_t channel = 1; channel <= 6; channel++) {
+		obs_source_t *global = obs_get_output_source(channel);
+
+		if (global) {
+			collect_audio(&list, global);
+			obs_source_release(global);
+		}
+	}
+
+	std::sort(list.begin(), list.end(),
+		  [](const AudioSource &a, const AudioSource &b) { return a.name < b.name; });
+	return list;
+}
+
+/* Who is on a track, as a sentence fragment for the dialog. */
+QString sources_on(int track, const std::vector<AudioSource> &list)
+{
+	QStringList names;
+
+	for (const AudioSource &source : list) {
+		if (source.mixers & (1u << (track - 1))) {
+			names.append(QString::fromStdString(source.name));
+		}
+	}
+
+	return names.join(QStringLiteral(", "));
+}
+
+/* Puts a source on a track of its own, and says which, or 0 when every track is
+ * taken.
+ *
+ * Only ever ADDS a track. Taking a source off one it was on could take it off the
+ * stream, and the whole point of this is a recording, so the stream hears exactly
+ * what it heard before. A source already alone on a track keeps that one rather
+ * than being given a second. */
+int give_own_track(const std::string &name)
+{
+	const std::vector<AudioSource> list = audio_sources();
+	const AudioSource *mine = nullptr;
+
+	for (const AudioSource &source : list) {
+		if (source.name == name) {
+			mine = &source;
+		}
+	}
+
+	if (!mine) {
+		return 0;
+	}
+
+	const int stream = stream_track();
+	const int vod = vod_track();
+
+	const auto others_on = [&](int track) {
+		for (const AudioSource &source : list) {
+			if (&source != mine && (source.mixers & (1u << (track - 1)))) {
+				return true;
+			}
+		}
+
+		return false;
+	};
+
+	for (int track = 1; track <= 6; track++) {
+		if (track != stream && (mine->mixers & (1u << (track - 1))) && !others_on(track)) {
+			return track;
+		}
+	}
+
+	for (int track = 1; track <= 6; track++) {
+		if (track == stream || track == vod || others_on(track) || (mine->mixers & (1u << (track - 1)))) {
+			continue;
+		}
+
+		obs_source_t *source = obs_get_source_by_name(name.c_str());
+
+		if (!source) {
+			return 0;
+		}
+
+		obs_source_set_audio_mixers(source, obs_source_get_audio_mixers(source) | (1u << (track - 1)));
+		obs_source_release(source);
+
+		blog(LOG_INFO, "[plasmastream] put '%s' on audio track %d of its own for the scene recording", name.c_str(),
+		     track);
+		return track;
+	}
+
+	return 0;
+}
+
+} // namespace
+
 void MultistreamDock::setUpRecording()
 {
 	if (!scene_recording_supported()) {
@@ -874,7 +1074,8 @@ void MultistreamDock::setUpRecording()
 
 	auto *format = new QComboBox(&dialog);
 	format->addItem(tr("mkv, survives a crash"), QStringLiteral("mkv"));
-	format->addItem(tr("mp4, opens anywhere"), QStringLiteral("mp4"));
+	format->addItem(tr("mp4 (Hybrid), survives a crash and opens anywhere"), QStringLiteral("mp4"));
+	format->addItem(tr("mov, for lossless audio in an editor"), QStringLiteral("mov"));
 
 	const int formatIndex = format->findData(QString::fromStdString(settings.format));
 
@@ -932,10 +1133,168 @@ void MultistreamDock::setUpRecording()
 
 	connect(encoder, &QComboBox::currentIndexChanged, &dialog, checkCodec);
 
-	auto *track = new QSpinBox(&dialog);
-	track->setRange(1, 6);
-	track->setValue(settings.audio_track);
-	track->setPrefix(tr("Track "));
+	/* Six rows, one per OBS track: record it or not, what to call it in the
+	 * file, and who is on it now. The last is what makes this usable at all:
+	 * most people have never opened Advanced Audio Properties, and a track
+	 * ticked with nothing on it is a silent track they find in the editor. */
+	auto *tracksGrid = new QGridLayout;
+	tracksGrid->setColumnStretch(2, 1);
+
+	QCheckBox *trackOn[6] = {};
+	QLineEdit *trackName[6] = {};
+	QLabel *trackWho[6] = {};
+
+	for (int i = 0; i < 6; i++) {
+		const int number = i + 1;
+
+		trackOn[i] = new QCheckBox(tr("Track %1").arg(number), &dialog);
+		trackOn[i]->setChecked(std::find(settings.audio_tracks.begin(), settings.audio_tracks.end(), number) !=
+				       settings.audio_tracks.end());
+
+		trackName[i] = new QLineEdit(QString::fromStdString(settings.track_names[static_cast<size_t>(i)]),
+					     &dialog);
+		const std::string fromObs = obs_track_name(number);
+		trackName[i]->setPlaceholderText(fromObs.empty() ? tr("Track %1").arg(number)
+								 : QString::fromStdString(fromObs));
+		trackName[i]->setToolTip(tr("What this track is called inside the file, which is the name your "
+					    "editor shows."));
+
+		trackWho[i] = new QLabel(&dialog);
+		trackWho[i]->setWordWrap(true);
+
+		tracksGrid->addWidget(trackOn[i], i, 0);
+		tracksGrid->addWidget(trackName[i], i, 1);
+		tracksGrid->addWidget(trackWho[i], i, 2);
+	}
+
+	const auto showWho = [=]() {
+		const std::vector<AudioSource> list = audio_sources();
+		const int stream = stream_track();
+
+		for (int i = 0; i < 6; i++) {
+			const QString who = sources_on(i + 1, list);
+			QString text = who.isEmpty() ? tr("Nothing on this track yet") : who;
+
+			if (i + 1 == stream) {
+				text = tr("Your stream's mix: %1").arg(who.isEmpty() ? tr("nothing") : who);
+			}
+
+			/* A ticked track with nothing on it is a silent track in the file. */
+			const bool silent = who.isEmpty() && trackOn[i]->isChecked();
+
+			trackWho[i]->setText(silent ? tr("Nothing on this track, so it will be silent") : text);
+			trackWho[i]->setStyleSheet(QStringLiteral("color: %1;")
+							   .arg(silent ? color::warn().name() : color::muted().name()));
+		}
+	};
+
+	for (int i = 0; i < 6; i++) {
+		connect(trackOn[i], &QCheckBox::toggled, &dialog, showWho);
+	}
+
+	auto *ownTrack = new QPushButton(tr("Give a source its own track..."), &dialog);
+
+	connect(ownTrack, &QPushButton::clicked, &dialog, [&dialog, trackOn, trackName, showWho]() {
+		QDialog picker(&dialog);
+		picker.setWindowTitle(tr("Give a source its own track"));
+
+		auto *intro = new QLabel(
+			tr("Pick a sound to get its own track in the recording, so you can level or cut it on its own "
+			   "when you edit: your microphone, Discord, the game.\n\nThis ticks it onto a spare track in "
+			   "OBS's Advanced Audio Properties. It never takes it off a track it is already on, so your "
+			   "stream sounds exactly as it did."),
+			&picker);
+		intro->setWordWrap(true);
+
+		auto *rows = new QGridLayout;
+		const std::vector<AudioSource> list = audio_sources();
+
+		for (int row = 0; row < static_cast<int>(list.size()); row++) {
+			const AudioSource &source = list[static_cast<size_t>(row)];
+			QStringList on;
+
+			for (int track = 1; track <= 6; track++) {
+				if (source.mixers & (1u << (track - 1))) {
+					on.append(QString::number(track));
+				}
+			}
+
+			auto *name = new QLabel(QString::fromStdString(source.name), &picker);
+			auto *where = new QLabel(on.isEmpty() ? tr("on no track") : tr("on %1").arg(on.join(QStringLiteral(", "))),
+						 &picker);
+			where->setStyleSheet(QStringLiteral("color: %1;").arg(color::muted().name()));
+
+			auto *give = new QPushButton(tr("Own track"), &picker);
+			const std::string sourceName = source.name;
+
+			connect(give, &QPushButton::clicked, &picker,
+				[&picker, give, where, sourceName, trackOn, trackName, showWho]() {
+					const int track = give_own_track(sourceName);
+
+					if (track == 0) {
+						QMessageBox::information(
+							&picker, tr("No spare track"),
+							tr("Every one of OBS's six tracks already carries something. Free one "
+							   "in OBS's Advanced Audio Properties, then try again."));
+						return;
+					}
+
+					trackOn[track - 1]->setChecked(true);
+
+					if (trackName[track - 1]->text().trimmed().isEmpty()) {
+						trackName[track - 1]->setText(QString::fromStdString(sourceName));
+					}
+
+					where->setText(tr("its own track: %1").arg(track));
+					give->setEnabled(false);
+					showWho();
+				});
+
+			rows->addWidget(name, row, 0);
+			rows->addWidget(where, row, 1);
+			rows->addWidget(give, row, 2);
+		}
+
+		if (list.empty()) {
+			rows->addWidget(new QLabel(tr("Nothing in this scene collection makes a sound yet."), &picker), 0, 0);
+		}
+
+		auto *done = new QDialogButtonBox(QDialogButtonBox::Close, &picker);
+		connect(done, &QDialogButtonBox::rejected, &picker, &QDialog::accept);
+
+		auto *pickerLayout = new QVBoxLayout(&picker);
+		pickerLayout->addWidget(intro);
+		pickerLayout->addLayout(rows);
+		pickerLayout->addWidget(done);
+
+		picker.exec();
+	});
+
+	auto *lossless = new QCheckBox(tr("Lossless audio, for editing the sound"), &dialog);
+	lossless->setChecked(settings.lossless_audio);
+	lossless->setToolTip(tr("Uncompressed 24-bit audio instead of AAC. Much bigger files; every editor reads it."));
+
+	auto *losslessNote = new QLabel(tr("Hybrid MP4 records AAC. Pick mkv or mov for lossless audio."), &dialog);
+	losslessNote->setWordWrap(true);
+	losslessNote->setStyleSheet(QStringLiteral("color: %1;").arg(color::muted().name()));
+
+	const auto followFormat = [=]() {
+		const bool mp4 = format->currentData().toString() == QStringLiteral("mp4");
+		lossless->setEnabled(!mp4 && enabled->isChecked());
+		losslessNote->setVisible(mp4);
+	};
+
+	connect(format, &QComboBox::currentIndexChanged, &dialog, followFormat);
+
+	auto *tracksBox = new QVBoxLayout;
+	tracksBox->addLayout(tracksGrid);
+
+	auto *tracksButtons = new QHBoxLayout;
+	tracksButtons->addWidget(ownTrack);
+	tracksButtons->addStretch();
+	tracksBox->addLayout(tracksButtons);
+	tracksBox->addWidget(lossless);
+	tracksBox->addWidget(losslessNote);
 
 	/* The recording's sound is the stream's mix, so a sound that is only in the
 	 * recorded scene is silent in the file. That is found out after the stream,
@@ -985,11 +1344,11 @@ void MultistreamDock::setUpRecording()
 		tr("This records a second picture of its own, so it costs a second encode. "
 		   "The scene you pick runs whether or not it is the one on screen, which is "
 		   "the point: stream the scene with your chat box and alerts, keep the clean "
-		   "one for the video.\n\nThe sound is your stream's mix on the Audio track, "
-		   "not the scene's own, so it follows whatever you are streaming. To keep "
-		   "alert sounds out of the video, untick that track for them in OBS's "
-		   "Advanced Audio Properties.\n\nIt does not touch OBS's own Start Recording "
-		   "button. Both can run at once."),
+		   "one for the video.\n\nEach track you tick becomes its own track in the file. "
+		   "The sound on them is OBS's own mix for each track, not the scene's, so it "
+		   "follows whatever you are streaming. To keep alert sounds out of the video, "
+		   "untick that track for them in OBS's Advanced Audio Properties.\n\nIt does not "
+		   "touch OBS's own Start Recording button. Both can run at once."),
 		&dialog);
 	note->setWordWrap(true);
 
@@ -1004,7 +1363,7 @@ void MultistreamDock::setUpRecording()
 	form->addRow(tr("Quality"), bitrate);
 	form->addRow(tr("Encoder"), encoder);
 	form->addRow(QString(), codecNote);
-	form->addRow(tr("Audio"), track);
+	form->addRow(tr("Audio tracks"), tracksBox);
 	form->addRow(QString(), silent);
 
 	/* Everything below the first box only means something once it is ticked. */
@@ -1018,7 +1377,14 @@ void MultistreamDock::setUpRecording()
 		format->setEnabled(on);
 		bitrate->setEnabled(on);
 		encoder->setEnabled(on);
-		track->setEnabled(on);
+
+		for (int i = 0; i < 6; i++) {
+			trackOn[i]->setEnabled(on);
+			trackName[i]->setEnabled(on);
+		}
+
+		ownTrack->setEnabled(on);
+		followFormat();
 	};
 
 	connect(enabled, &QCheckBox::toggled, &dialog, followEnabled);
@@ -1026,10 +1392,28 @@ void MultistreamDock::setUpRecording()
 	followEnabled();
 	checkAudio();
 	checkCodec();
+	showWho();
 
 	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
 					     &dialog);
-	connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+
+	/* A recording with no track ticked has no sound, which nobody means. */
+	connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, enabled, trackOn]() {
+		bool any = false;
+
+		for (int i = 0; i < 6; i++) {
+			any = any || trackOn[i]->isChecked();
+		}
+
+		if (enabled->isChecked() && !any) {
+			QMessageBox::information(&dialog, tr("Pick a track"),
+						 tr("Tick at least one audio track, or the recording will have no sound. "
+						    "Track 1 is usually everything your stream hears."));
+			return;
+		}
+
+		dialog.accept();
+	});
 	connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
 	auto *layout = new QVBoxLayout(&dialog);
@@ -1048,7 +1432,21 @@ void MultistreamDock::setUpRecording()
 	settings.format = format->currentData().toString().toStdString();
 	settings.video_bitrate = bitrate->value();
 	settings.encoder_id = encoder->currentData().toString().toStdString();
-	settings.audio_track = track->value();
+	settings.audio_tracks.clear();
+
+	for (int i = 0; i < 6; i++) {
+		if (trackOn[i]->isChecked()) {
+			settings.audio_tracks.push_back(i + 1);
+		}
+
+		settings.track_names[static_cast<size_t>(i)] = trackName[i]->text().trimmed().toStdString();
+	}
+
+	if (settings.audio_tracks.empty()) {
+		settings.audio_tracks.push_back(1);
+	}
+
+	settings.lossless_audio = lossless->isChecked();
 
 	config().scene_recording = settings;
 	save_config();
@@ -1129,6 +1527,127 @@ void MultistreamDock::refreshRecording()
 	recordingToggle_->setText(status.running ? tr("Stop") : tr("Start"));
 	recordingToggle_->setEnabled(scene_recording_supported());
 	recordingSetUp_->setEnabled(scene_recording_supported());
+}
+
+/* Whether markers are going anywhere, and how many have. */
+void MultistreamDock::refreshMarkers()
+{
+	const MarkerStatus status = markers_status();
+	const MarkerSettings &settings = config().markers;
+
+	QColor ink = color::muted();
+	QString text;
+
+	if (!status.collecting) {
+		text = settings.enabled ? tr("Chapter markers go into whatever you record")
+					: tr("Chapter markers from PlasmaStream are off");
+	} else if (!status.problem.empty()) {
+		ink = color::warn();
+		text = QString::fromStdString(status.problem);
+	} else if (status.added == 0) {
+		ink = color::ok();
+		text = tr("Marking this recording");
+	} else {
+		ink = color::ok();
+		const QString last = QString::fromStdString(status.last);
+		text = status.added == 1 ? tr("1 marker so far: %1").arg(last)
+					 : tr("%1 markers so far, last: %2").arg(status.added).arg(last);
+	}
+
+	markersState_->setText(text);
+	markersState_->setStyleSheet(QStringLiteral("color: %1;").arg(ink.name()));
+	markersAdd_->setEnabled(status.collecting);
+}
+
+void MultistreamDock::addMarker()
+{
+	if (!markers_add_now()) {
+		setNotice(tr("Nothing is recording, so there is nothing to mark."), false);
+	}
+
+	refreshMarkers();
+}
+
+void MultistreamDock::setUpMarkers()
+{
+	MarkerSettings settings = config().markers;
+
+	QDialog dialog(this);
+	dialog.setWindowTitle(tr("Chapter markers"));
+
+	auto *enabled = new QCheckBox(tr("Mark moments from my stream in my recordings"), &dialog);
+	enabled->setChecked(settings.enabled);
+
+	auto *raids = new QCheckBox(tr("Raids"), &dialog);
+	raids->setChecked(settings.raids);
+	auto *subs = new QCheckBox(tr("Subs, gifted subs and memberships"), &dialog);
+	subs->setChecked(settings.subs);
+	auto *money = new QCheckBox(tr("Cheers of 100 bits or more, donations and Super Chats"), &dialog);
+	money->setChecked(settings.money);
+	auto *games = new QCheckBox(tr("The game changing"), &dialog);
+	games->setChecked(settings.games);
+
+	const auto followEnabled = [=]() {
+		const bool on = enabled->isChecked();
+		raids->setEnabled(on);
+		subs->setEnabled(on);
+		money->setEnabled(on);
+		games->setEnabled(on);
+	};
+
+	connect(enabled, &QCheckBox::toggled, &dialog, followEnabled);
+	followEnabled();
+
+	auto *note = new QLabel(
+		tr("While anything is recording, the moments you tick become chapters: in OBS's own recording and in "
+		   "the scene recording, if one is running.\n\nEvery recording gets a chapters file beside it, "
+		   "named like the video with .chapters.txt on the end, with a line per moment such as \"12:34 Raid: "
+		   "Mr_Dino_Saur_, 42 viewers\". It pastes straight into a YouTube description. A Hybrid MP4 also "
+		   "gets the chapters inside the file itself, which players and some editors show.\n\nTo mark a "
+		   "moment yourself, press Mark in this dock, set a key for \"PlasmaStream: add a chapter marker\" in "
+		   "OBS Settings > Hotkeys, or have a moderator type !marker in chat with what happened after it. "
+		   "Those always go in, whatever is ticked here.\n\nMoments from your stream need your PlasmaStream "
+		   "key; the hotkey and the Mark button do not."),
+		&dialog);
+	note->setWordWrap(true);
+	note->setStyleSheet(QStringLiteral("color: %1;").arg(color::muted().name()));
+
+	auto *form = new QVBoxLayout;
+	form->addWidget(enabled);
+
+	auto *kinds = new QVBoxLayout;
+	kinds->setContentsMargins(20, 0, 0, 0);
+	kinds->addWidget(raids);
+	kinds->addWidget(subs);
+	kinds->addWidget(money);
+	kinds->addWidget(games);
+	form->addLayout(kinds);
+
+	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+	connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+	connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+	auto *layout = new QVBoxLayout(&dialog);
+	layout->addLayout(form);
+	layout->addWidget(note);
+	layout->addWidget(buttons);
+
+	dialog.setMinimumWidth(460);
+
+	if (dialog.exec() != QDialog::Accepted) {
+		return;
+	}
+
+	settings.enabled = enabled->isChecked();
+	settings.raids = raids->isChecked();
+	settings.subs = subs->isChecked();
+	settings.money = money->isChecked();
+	settings.games = games->isChecked();
+
+	config().markers = settings;
+	save_config();
+	markers_apply();
+	refreshMarkers();
 }
 
 namespace {
@@ -2004,6 +2523,7 @@ static QString uptimeText(int seconds)
 void MultistreamDock::refreshStatuses()
 {
 	refreshRecording();
+	refreshMarkers();
 	refreshVoice();
 	refreshWarnings();
 	refreshUpdate();
