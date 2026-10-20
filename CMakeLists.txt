@@ -67,6 +67,8 @@ target_sources(
     src/preview.hpp
     src/scenerec.cpp
     src/scenerec.hpp
+    src/trackmix.cpp
+    src/trackmix.hpp
     src/update.cpp
     src/update.hpp
     src/vertical.cpp

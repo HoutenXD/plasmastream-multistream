@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "markers.hpp"
 #include "outputs.hpp"
 #include "scenerec.hpp"
+#include "trackmix.hpp"
 #include "update.hpp"
 #include "vertical.hpp"
 #include "voice.hpp"
@@ -160,6 +161,9 @@ void obs_module_unload(void)
 	/* A module can be unloaded without the frontend exiting, so EXIT is not
 	 * enough on its own. */
 	plasmastream::stop_outputs();
+	/* After the outputs, whose encoders read the mixers, and before this
+	 * module's code goes: each mixer runs a thread in it. */
+	plasmastream::track_mix_shutdown();
 	plasmastream::voice_shutdown();
 	plasmastream::markers_shutdown();
 	plasmastream::warnings_shutdown();

@@ -20,6 +20,24 @@ That costs CPU, and it buys the thing people actually run into: an upload that
 cannot carry two copies of a 6000 kbps stream, but can carry one of those and
 one at 2500.
 
+### Sound per destination
+
+Each destination hears the main stream's sound unless it is given tracks of its
+own: any of OBS's six audio tracks, in the destination's **Sound** settings.
+One track is sent as that track's mix. Two or more are added together into the
+one sound the platform gets, so music on YouTube and not on Twitch is the music
+on a track of its own, ticked for YouTube and not for Twitch. Which sources are
+on which track is set in OBS under Edit, Advanced Audio Properties.
+
+A destination with its own sound still shares the main stream's picture; only
+the audio is encoded again, which costs next to nothing. The dialog says who is
+on each track, and warns about a track with nothing on it and about a source on
+two of the chosen tracks, which the mix would play twice as loud.
+
+The tracks are mixed by the plugin, on OBS's own timestamps, so the sound stays
+in step with the picture. They are never sent as separate audio tracks: RTMP
+gives every platform one track to play, and most would drop the rest.
+
 ### Vertical
 
 A destination can be sent a 9:16 frame instead. There is one vertical canvas,

@@ -19,8 +19,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "outputs.hpp"
 
 #include "config.hpp"
+#include "trackmix.hpp"
 #include "vertical.hpp"
 
+#include <cstring>
 #include <memory>
 #include <mutex>
 
@@ -43,7 +45,13 @@ struct RunningOutput {
 	obs_service_t *service = nullptr;
 	obs_encoder_t *video = nullptr;
 	obs_encoder_t *audio = nullptr;
-	bool owns_encoders = false;
+	/* Separately, because a destination with its own sound can still share
+	 * the main stream's picture: the cheap way to keep music off one platform. */
+	bool owns_video = false;
+	bool owns_audio = false;
+	/* The tracks this one's sound is mixed from, when more than one: the mixer
+	 * is held until the destination is released. 0 for none. */
+	uint32_t mix_mask = 0;
 	OutputState state = OutputState::Idle;
 	std::string detail;
 
@@ -151,18 +159,25 @@ void release(RunningOutput &running)
 
 	/* Only ours. A shared encoder belongs to the main output, and releasing it
 	 * would take the main stream down along with this destination. */
-	if (running.owns_encoders) {
-		if (running.video) {
-			obs_encoder_release(running.video);
-		}
+	if (running.owns_video && running.video) {
+		obs_encoder_release(running.video);
+	}
 
-		if (running.audio) {
-			obs_encoder_release(running.audio);
-		}
+	if (running.owns_audio && running.audio) {
+		obs_encoder_release(running.audio);
 	}
 
 	running.video = nullptr;
 	running.audio = nullptr;
+	running.owns_video = false;
+	running.owns_audio = false;
+
+	/* After the encoder: the mixer is its sound, and is only closed once the
+	 * encoder has let go of it. */
+	if (running.mix_mask != 0) {
+		track_mix_release(running.mix_mask);
+		running.mix_mask = 0;
+	}
 }
 
 /* What the main stream encodes with, so a per-destination encoder defaults to
@@ -214,22 +229,20 @@ obs_encoder_t *best_shared_video(obs_output_t *main_output, int *rungs)
 	return best;
 }
 
-/* Borrow the main stream's encoders, or build this destination its own.
+/* The picture: the main stream's encoder, or one of this destination's own.
  *
  * Its own costs CPU, which is why it is not the default. It buys the thing
  * people actually need: a second destination at a bitrate their upload can
  * carry, rather than a second copy of the first one's. */
-bool attach_encoders(RunningOutput &running, const Destination &destination,
-		     obs_output_t *main_output, obs_encoder_t *shared_video,
-		     obs_encoder_t *shared_audio)
+bool attach_video(RunningOutput &running, const Destination &destination, obs_output_t *main_output,
+		  obs_encoder_t *shared_video)
 {
 	/* Sharing is not on offer for a vertical destination: the main stream's
 	 * encoder reads the main canvas, and there is no telling it otherwise. */
 	if (!destination.own_encoder && !destination.vertical) {
 		running.video = shared_video;
-		running.audio = shared_audio;
-		running.owns_encoders = false;
-		return running.video && running.audio;
+		running.owns_video = false;
+		return running.video != nullptr;
 	}
 
 	const char *encoder_id = destination.encoder_id.empty()
@@ -246,35 +259,16 @@ bool attach_encoders(RunningOutput &running, const Destination &destination,
 						 video_settings, nullptr);
 	obs_data_release(video_settings);
 
-	obs_data_t *audio_settings = obs_data_create();
-	obs_data_set_int(audio_settings, "bitrate", destination.audio_bitrate);
-
-	running.audio = obs_audio_encoder_create("ffmpeg_aac", (running.name + " audio").c_str(),
-						 audio_settings, 0, nullptr);
-	obs_data_release(audio_settings);
-
-	if (!running.video || !running.audio) {
-		blog(LOG_WARNING, "[plasmastream] could not build encoders for '%s' (%s)",
+	if (!running.video) {
+		blog(LOG_WARNING, "[plasmastream] could not build a video encoder for '%s' (%s)",
 		     running.name.c_str(), encoder_id);
-
-		if (running.video) {
-			obs_encoder_release(running.video);
-			running.video = nullptr;
-		}
-
-		if (running.audio) {
-			obs_encoder_release(running.audio);
-			running.audio = nullptr;
-		}
-
 		return false;
 	}
 
-	running.owns_encoders = true;
+	running.owns_video = true;
 
 	/* A vertical destination reads the vertical canvas; everything else reads
-	 * the same mix the main stream does and differs only in compression. Audio
-	 * is the main mix either way, since the vertical canvas makes none. */
+	 * the same picture the main stream does and differs only in compression. */
 	video_t *mix = obs_get_video();
 
 #if PLASMASTREAM_HAS_CANVAS
@@ -293,7 +287,84 @@ bool attach_encoders(RunningOutput &running, const Destination &destination,
 #endif
 
 	obs_encoder_set_video(running.video, mix);
-	obs_encoder_set_audio(running.audio, obs_get_audio());
+	return true;
+}
+
+/* The sound: the main stream's encoder, or one of this destination's own.
+ *
+ * Its own when it was given tracks of its own, when it encodes its own picture
+ * (and so its own audio bitrate), and when the main stream's sound is not AAC,
+ * which is the only codec every RTMP platform takes: a main stream sent over
+ * WHIP is Opus, and relaying that to YouTube would be refused.
+ *
+ * An audio encoder is cheap next to a video one, so having one costs next to
+ * nothing; sharing the main one is still the default because it is what
+ * "same as the main stream" means byte for byte. */
+bool attach_audio(RunningOutput &running, const Destination &destination, obs_encoder_t *shared_audio)
+{
+	const uint32_t mask = tracks_mask(destination.audio_tracks);
+	const char *shared_codec = shared_audio ? obs_encoder_get_codec(shared_audio) : nullptr;
+	const bool shared_is_aac = shared_codec && strcmp(shared_codec, "aac") == 0;
+	const bool own_picture = destination.own_encoder || destination.vertical;
+
+	if (mask == 0 && !own_picture && shared_is_aac) {
+		running.audio = shared_audio;
+		running.owns_audio = false;
+		return true;
+	}
+
+	if (mask == 0 && shared_audio && !shared_is_aac) {
+		blog(LOG_INFO, "[plasmastream] the main stream's audio is %s; '%s' gets AAC of its own",
+		     shared_codec ? shared_codec : "unknown", running.name.c_str());
+	}
+
+	/* Same as the main stream: whichever track the main stream reads, which is
+	 * not always track 1. Settings > Output can point the stream at any of the
+	 * six, and a destination that silently read track 1 instead would be the
+	 * wrong mix with no way to tell. */
+	size_t mixer_idx = shared_audio ? obs_encoder_get_mixer_index(shared_audio) : 0;
+	audio_t *source = obs_get_audio();
+
+	if (tracks_in(mask) == 1) {
+		mixer_idx = static_cast<size_t>(destination.audio_tracks.front() - 1);
+	} else if (tracks_in(mask) > 1) {
+		source = track_mix_acquire(mask);
+
+		if (!source) {
+			blog(LOG_WARNING, "[plasmastream] could not mix the tracks '%s' asked for",
+			     running.name.c_str());
+			return false;
+		}
+
+		running.mix_mask = mask;
+		mixer_idx = 0;
+	}
+
+	obs_data_t *audio_settings = obs_data_create();
+	obs_data_set_int(audio_settings, "bitrate", destination.audio_bitrate);
+
+	running.audio = obs_audio_encoder_create("ffmpeg_aac", (running.name + " audio").c_str(),
+						 audio_settings, mixer_idx, nullptr);
+	obs_data_release(audio_settings);
+
+	if (!running.audio) {
+		blog(LOG_WARNING, "[plasmastream] could not build an audio encoder for '%s'",
+		     running.name.c_str());
+		return false;
+	}
+
+	running.owns_audio = true;
+	obs_encoder_set_audio(running.audio, source);
+
+	if (mask != 0) {
+		std::string list;
+
+		for (const int track : destination.audio_tracks) {
+			list += (list.empty() ? "" : ", ") + std::to_string(track);
+		}
+
+		blog(LOG_INFO, "[plasmastream] '%s' hears track(s) %s", running.name.c_str(), list.c_str());
+	}
 
 	return true;
 }
@@ -337,7 +408,8 @@ RunningOutput *spin_up(const Destination &destination, obs_output_t *main_output
 
 	running->vertical = destination.vertical;
 
-	if (!attach_encoders(*running, destination, main_output, shared_video, shared_audio)) {
+	if (!attach_video(*running, destination, main_output, shared_video) ||
+	    !attach_audio(*running, destination, shared_audio)) {
 		release(*running);
 		return nullptr;
 	}

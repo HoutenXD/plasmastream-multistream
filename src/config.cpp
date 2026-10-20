@@ -42,6 +42,18 @@ obs_data_t *destination_to_data(const Destination &destination)
 	obs_data_set_int(data, "audio_bitrate", destination.audio_bitrate);
 	obs_data_set_string(data, "encoder_id", destination.encoder_id.c_str());
 	obs_data_set_bool(data, "vertical", destination.vertical);
+
+	/* A bitmask, the same shape as the scene recording's. 0 is "same as the
+	 * main stream", which is also what a config from before this reads as. */
+	int64_t mask = 0;
+
+	for (const int track : destination.audio_tracks) {
+		if (track >= 1 && track <= 6) {
+			mask |= int64_t{1} << (track - 1);
+		}
+	}
+
+	obs_data_set_int(data, "audio_tracks_mask", mask);
 	return data;
 }
 
@@ -67,6 +79,14 @@ Destination destination_from_data(obs_data_t *data)
 	destination.audio_bitrate = static_cast<int>(obs_data_get_int(data, "audio_bitrate"));
 	destination.encoder_id = obs_data_get_string(data, "encoder_id");
 	destination.vertical = obs_data_get_bool(data, "vertical");
+
+	const int64_t mask = obs_data_get_int(data, "audio_tracks_mask");
+
+	for (int track = 1; track <= 6; track++) {
+		if (mask & (int64_t{1} << (track - 1))) {
+			destination.audio_tracks.push_back(track);
+		}
+	}
 
 	/* Carried over from when the frame's shape lived on each destination rather
 	 * than on the canvas they now share. The first one that has it wins, which

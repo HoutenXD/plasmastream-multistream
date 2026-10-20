@@ -262,6 +262,115 @@ std::string make_local_id()
 	       std::to_string(static_cast<long long>(os_gettime_ns() / 1000000));
 }
 
+/* Output mode, which decides where OBS keeps its track settings. */
+bool advanced_output()
+{
+	config_t *profile = obs_frontend_get_profile_config();
+	const char *mode = profile ? config_get_string(profile, "Output", "Mode") : nullptr;
+
+	return mode && strcmp(mode, "Advanced") == 0;
+}
+
+/* Which of OBS's six tracks the stream sends. Simple mode always sends track 1. */
+int stream_track()
+{
+	config_t *profile = obs_frontend_get_profile_config();
+
+	if (!profile || !advanced_output()) {
+		return 1;
+	}
+
+	const int track = static_cast<int>(config_get_int(profile, "AdvOut", "TrackIndex"));
+	return track >= 1 && track <= 6 ? track : 1;
+}
+
+/* Twitch's VOD track, when one is switched on: everything but the music, so never
+ * a free track for somebody's microphone however empty it looks. Simple mode puts
+ * it on track 2. Zero when there is none. */
+int vod_track()
+{
+	config_t *profile = obs_frontend_get_profile_config();
+
+	if (!profile) {
+		return 0;
+	}
+
+	if (!advanced_output()) {
+		return config_get_bool(profile, "SimpleOutput", "VodTrackEnabled") ? 2 : 0;
+	}
+
+	if (!config_get_bool(profile, "AdvOut", "VodTrackEnabled")) {
+		return 0;
+	}
+
+	const int track = static_cast<int>(config_get_int(profile, "AdvOut", "VodTrackIndex"));
+	return track >= 1 && track <= 6 ? track : 0;
+}
+
+struct AudioSource {
+	std::string name;
+	uint32_t mixers = 0;
+};
+
+bool collect_audio(void *param, obs_source_t *source)
+{
+	auto &list = *static_cast<std::vector<AudioSource> *>(param);
+
+	if ((obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO) == 0) {
+		return true;
+	}
+
+	const char *name = obs_source_get_name(source);
+
+	if (!name || !*name) {
+		return true;
+	}
+
+	for (const AudioSource &already : list) {
+		if (already.name == name) {
+			return true;
+		}
+	}
+
+	list.push_back({name, obs_source_get_audio_mixers(source)});
+	return true;
+}
+
+/* Everything that makes a sound, with the tracks each is on: the sources in
+ * scenes, and the microphone and desktop audio OBS mixes in on its own. */
+std::vector<AudioSource> audio_sources()
+{
+	std::vector<AudioSource> list;
+	obs_enum_sources(collect_audio, &list);
+
+	for (uint32_t channel = 1; channel <= 6; channel++) {
+		obs_source_t *global = obs_get_output_source(channel);
+
+		if (global) {
+			collect_audio(&list, global);
+			obs_source_release(global);
+		}
+	}
+
+	std::sort(list.begin(), list.end(),
+		  [](const AudioSource &a, const AudioSource &b) { return a.name < b.name; });
+	return list;
+}
+
+/* Who is on a track, as a sentence fragment for the dialog. */
+QString sources_on(int track, const std::vector<AudioSource> &list)
+{
+	QStringList names;
+
+	for (const AudioSource &source : list) {
+		if (source.mixers & (1u << (track - 1))) {
+			names.append(QString::fromStdString(source.name));
+		}
+	}
+
+	return names.join(QStringLiteral(", "));
+}
+
 /* The stream key is a password field on purpose: people configure OBS while
  * screen sharing. */
 bool edit_destination(QWidget *parent, Destination &destination, bool creating)
@@ -377,7 +486,141 @@ bool edit_destination(QWidget *parent, Destination &destination, bool creating)
 	// Vertical has no choice about its own encoder: the main stream's is bound
 	// to the main canvas. Showing the box ticked and greyed says that, where a
 	// box that silently disagrees with what happens does not.
-	const auto syncEncoderRow = [own, vertical, videoBitrate, audioBitrate, encoder]() {
+	/* The sound this destination gets: the main stream's, or tracks of its own.
+	 *
+	 * Each track row says who is on it, because the tracks are set up in OBS's
+	 * Advanced Audio Properties, which most people have never opened, and a
+	 * track picked with nothing on it is a silent stream. */
+	const int mainTrack = stream_track();
+	const std::vector<AudioSource> sources = audio_sources();
+	const QString mainWho = sources_on(mainTrack, sources);
+
+	auto *sameSound = new QCheckBox(
+		QObject::tr("Same sound as the main stream (track %1)").arg(mainTrack), &dialog);
+	sameSound->setChecked(destination.audio_tracks.empty());
+
+	auto *tracksGrid = new QGridLayout;
+	tracksGrid->setColumnStretch(1, 1);
+	tracksGrid->setContentsMargins(16, 0, 0, 0);
+
+	QCheckBox *trackOn[6] = {};
+
+	for (int i = 0; i < 6; i++) {
+		const int number = i + 1;
+		const std::string fromObs = obs_track_name(number);
+		const QString label = fromObs.empty()
+					      ? QObject::tr("Track %1").arg(number)
+					      : QObject::tr("Track %1, %2").arg(number).arg(QString::fromStdString(fromObs));
+
+		trackOn[i] = new QCheckBox(label, &dialog);
+		trackOn[i]->setChecked(std::find(destination.audio_tracks.begin(), destination.audio_tracks.end(),
+						 number) != destination.audio_tracks.end());
+
+		const QString who = sources_on(number, sources);
+		auto *whoLabel = new QLabel(who.isEmpty() ? QObject::tr("Nothing on this track") : who, &dialog);
+		whoLabel->setWordWrap(true);
+		whoLabel->setStyleSheet(QStringLiteral("color: %1;").arg(color::muted().name()));
+
+		tracksGrid->addWidget(trackOn[i], i, 0);
+		tracksGrid->addWidget(whoLabel, i, 1);
+	}
+
+	auto *soundNote = new QLabel(&dialog);
+	soundNote->setWordWrap(true);
+
+	auto *soundHelp = new QLabel(
+		QObject::tr("Tick the tracks this platform should hear. Two or more are mixed into the one "
+			    "sound it gets, so music on one platform and not another is a track with the "
+			    "music on it, ticked for one and not the other. Which sources are on which "
+			    "track is set in OBS: Edit, Advanced Audio Properties."),
+		&dialog);
+	soundHelp->setWordWrap(true);
+
+	const auto chosenTracks = [trackOn]() {
+		std::vector<int> tracks;
+
+		for (int i = 0; i < 6; i++) {
+			if (trackOn[i]->isChecked()) {
+				tracks.push_back(i + 1);
+			}
+		}
+
+		return tracks;
+	};
+
+	/* Says what will be wrong with the sound, before it goes out wrong: a
+	 * track with nobody on it, nothing ticked at all, or a source on two of
+	 * the ticked tracks, which the mix would play twice as loud. */
+	const auto checkSound = [=]() {
+		const bool same = sameSound->isChecked();
+
+		for (QCheckBox *box : trackOn) {
+			box->setEnabled(!same);
+		}
+
+		QStringList problems;
+
+		if (same) {
+			if (mainWho.isEmpty()) {
+				problems.append(QObject::tr("Nothing is on track %1, which your main stream sends, so "
+							    "this will be silent.")
+							.arg(mainTrack));
+			}
+		} else {
+			const std::vector<int> tracks = chosenTracks();
+
+			if (tracks.empty()) {
+				problems.append(QObject::tr("No tracks ticked. Tick at least one, or this goes back to "
+							    "the main stream's sound when you save."));
+			}
+
+			QStringList silent;
+			uint32_t mask = 0;
+
+			for (const int track : tracks) {
+				mask |= 1u << (track - 1);
+
+				if (sources_on(track, sources).isEmpty()) {
+					silent.append(QString::number(track));
+				}
+			}
+
+			if (!silent.isEmpty()) {
+				problems.append(QObject::tr("Nothing is on track %1 yet, so it adds nothing.")
+							.arg(silent.join(QStringLiteral(", "))));
+			}
+
+			QStringList doubled;
+
+			for (const AudioSource &source : sources) {
+				const uint32_t on = source.mixers & mask;
+
+				if (on && (on & (on - 1))) {
+					doubled.append(QString::fromStdString(source.name));
+				}
+			}
+
+			if (!doubled.isEmpty()) {
+				problems.append(QObject::tr("%1 %2 on more than one of these tracks, so this platform "
+							    "will hear it twice as loud. Take it off all but one of them in "
+							    "Advanced Audio Properties.")
+							.arg(doubled.join(QStringLiteral(", ")))
+							.arg(doubled.size() == 1 ? QObject::tr("is") : QObject::tr("are")));
+			}
+		}
+
+		soundNote->setText(problems.join(QStringLiteral("\n")));
+		soundNote->setStyleSheet(QStringLiteral("color: %1;").arg(color::warn().name()));
+		soundNote->setVisible(!problems.isEmpty());
+	};
+
+	QObject::connect(sameSound, &QCheckBox::toggled, checkSound);
+
+	for (QCheckBox *box : trackOn) {
+		QObject::connect(box, &QCheckBox::toggled, checkSound);
+	}
+
+	const auto syncEncoderRow = [own, vertical, videoBitrate, audioBitrate, encoder, sameSound]() {
 		const bool portrait = vertical->isChecked();
 		const bool separate = portrait || own->isChecked();
 
@@ -388,13 +631,16 @@ bool edit_destination(QWidget *parent, Destination &destination, bool creating)
 		}
 
 		videoBitrate->setEnabled(separate);
-		audioBitrate->setEnabled(separate);
+		// Its own sound means its own audio encoder, even sharing the picture.
+		audioBitrate->setEnabled(separate || !sameSound->isChecked());
 		encoder->setEnabled(separate);
 	};
 
 	QObject::connect(own, &QCheckBox::toggled, syncEncoderRow);
 	QObject::connect(vertical, &QCheckBox::toggled, syncEncoderRow);
+	QObject::connect(sameSound, &QCheckBox::toggled, syncEncoderRow);
 	syncEncoderRow();
+	checkSound();
 
 	auto *form = new QFormLayout;
 	form->addRow(QObject::tr("Platform"), platform);
@@ -421,6 +667,16 @@ bool edit_destination(QWidget *parent, Destination &destination, bool creating)
 	auto *layout = new QVBoxLayout(&dialog);
 	layout->addLayout(form);
 	layout->addWidget(ownNote);
+
+	auto *soundTitle = new QLabel(QObject::tr("<b>Sound</b>"), &dialog);
+	layout->addSpacing(6);
+	layout->addWidget(soundTitle);
+	layout->addWidget(sameSound);
+	layout->addLayout(tracksGrid);
+	layout->addWidget(soundNote);
+	layout->addWidget(soundHelp);
+	layout->addSpacing(6);
+
 	layout->addWidget(hint);
 	layout->addWidget(buttons);
 
@@ -437,6 +693,8 @@ bool edit_destination(QWidget *parent, Destination &destination, bool creating)
 	destination.audio_bitrate = audioBitrate->value();
 	destination.encoder_id = encoder->currentData().toString().toStdString();
 	destination.vertical = vertical->isChecked();
+	// Nothing ticked reads as the main stream's sound, never as silence.
+	destination.audio_tracks = sameSound->isChecked() ? std::vector<int>{} : chosenTracks();
 
 	if (destination.name.empty()) {
 		destination.name = platform_label(destination.platform).toStdString();
@@ -722,6 +980,19 @@ void MultistreamDock::rebuildTable()
 		name->setData(RowDelegate::PlatformRole,
 			      QString::fromStdString(destination.platform));
 		name->setData(RowDelegate::VerticalRole, destination.vertical);
+
+		// Its own sound is invisible otherwise, and it is the setting most
+		// likely to be the answer to "why is the music on this one".
+		if (!destination.audio_tracks.empty()) {
+			QStringList tracks;
+
+			for (const int track : destination.audio_tracks) {
+				tracks.append(QString::number(track));
+			}
+
+			name->setToolTip(tr("Hears track %1").arg(tracks.join(QStringLiteral(", "))));
+		}
+
 		table_->setItem(row, 1, name);
 
 		table_->setItem(row, 2, new QTableWidgetItem(where_label(destination)));
@@ -761,6 +1032,7 @@ void MultistreamDock::editSelected()
 	}
 
 	Destination destination = config().destinations[static_cast<size_t>(row)];
+	const Destination before = destination;
 
 	if (!edit_destination(this, destination, false)) {
 		return;
@@ -769,6 +1041,35 @@ void MultistreamDock::editSelected()
 	config().destinations[static_cast<size_t>(row)] = destination;
 	save_config();
 	rebuildTable();
+
+	/* A change to what goes out only lands when the destination next starts.
+	 * Mid-stream that is the next stream, which is no use to somebody who just
+	 * heard their music going to the wrong platform, so offer it now, at the
+	 * cost of that one destination reconnecting. */
+	const bool changed = before.url != destination.url || before.key != destination.key ||
+			     before.own_encoder != destination.own_encoder ||
+			     before.video_bitrate != destination.video_bitrate ||
+			     before.audio_bitrate != destination.audio_bitrate ||
+			     before.encoder_id != destination.encoder_id || before.vertical != destination.vertical ||
+			     before.audio_tracks != destination.audio_tracks;
+
+	if (!changed || !destination.enabled || !streaming_live()) {
+		return;
+	}
+
+	const auto answer = QMessageBox::question(
+		this, tr("Apply now?"),
+		tr("%1 is live. Apply the change now? It reconnects, which drops it for a few seconds. "
+		   "Otherwise it applies the next time you go live.")
+			.arg(QString::fromStdString(destination.name)));
+
+	if (answer != QMessageBox::Yes) {
+		return;
+	}
+
+	const std::string id = destination.id.empty() ? destination.name : destination.id;
+	stop_one(id);
+	start_one(id);
 }
 
 void MultistreamDock::removeSelected()
@@ -829,114 +1130,6 @@ void MultistreamDock::changeToken()
  * choosing. */
 namespace {
 
-/* Output mode, which decides where OBS keeps its track settings. */
-bool advanced_output()
-{
-	config_t *profile = obs_frontend_get_profile_config();
-	const char *mode = profile ? config_get_string(profile, "Output", "Mode") : nullptr;
-
-	return mode && strcmp(mode, "Advanced") == 0;
-}
-
-/* Which of OBS's six tracks the stream sends. Simple mode always sends track 1. */
-int stream_track()
-{
-	config_t *profile = obs_frontend_get_profile_config();
-
-	if (!profile || !advanced_output()) {
-		return 1;
-	}
-
-	const int track = static_cast<int>(config_get_int(profile, "AdvOut", "TrackIndex"));
-	return track >= 1 && track <= 6 ? track : 1;
-}
-
-/* Twitch's VOD track, when one is switched on: everything but the music, so never
- * a free track for somebody's microphone however empty it looks. Simple mode puts
- * it on track 2. Zero when there is none. */
-int vod_track()
-{
-	config_t *profile = obs_frontend_get_profile_config();
-
-	if (!profile) {
-		return 0;
-	}
-
-	if (!advanced_output()) {
-		return config_get_bool(profile, "SimpleOutput", "VodTrackEnabled") ? 2 : 0;
-	}
-
-	if (!config_get_bool(profile, "AdvOut", "VodTrackEnabled")) {
-		return 0;
-	}
-
-	const int track = static_cast<int>(config_get_int(profile, "AdvOut", "VodTrackIndex"));
-	return track >= 1 && track <= 6 ? track : 0;
-}
-
-struct AudioSource {
-	std::string name;
-	uint32_t mixers = 0;
-};
-
-bool collect_audio(void *param, obs_source_t *source)
-{
-	auto &list = *static_cast<std::vector<AudioSource> *>(param);
-
-	if ((obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO) == 0) {
-		return true;
-	}
-
-	const char *name = obs_source_get_name(source);
-
-	if (!name || !*name) {
-		return true;
-	}
-
-	for (const AudioSource &already : list) {
-		if (already.name == name) {
-			return true;
-		}
-	}
-
-	list.push_back({name, obs_source_get_audio_mixers(source)});
-	return true;
-}
-
-/* Everything that makes a sound, with the tracks each is on: the sources in
- * scenes, and the microphone and desktop audio OBS mixes in on its own. */
-std::vector<AudioSource> audio_sources()
-{
-	std::vector<AudioSource> list;
-	obs_enum_sources(collect_audio, &list);
-
-	for (uint32_t channel = 1; channel <= 6; channel++) {
-		obs_source_t *global = obs_get_output_source(channel);
-
-		if (global) {
-			collect_audio(&list, global);
-			obs_source_release(global);
-		}
-	}
-
-	std::sort(list.begin(), list.end(),
-		  [](const AudioSource &a, const AudioSource &b) { return a.name < b.name; });
-	return list;
-}
-
-/* Who is on a track, as a sentence fragment for the dialog. */
-QString sources_on(int track, const std::vector<AudioSource> &list)
-{
-	QStringList names;
-
-	for (const AudioSource &source : list) {
-		if (source.mixers & (1u << (track - 1))) {
-			names.append(QString::fromStdString(source.name));
-		}
-	}
-
-	return names.join(QStringLiteral(", "));
-}
 
 /* Puts a source on a track of its own, and says which, or 0 when every track is
  * taken.

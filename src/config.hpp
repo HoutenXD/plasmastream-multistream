@@ -252,6 +252,17 @@ struct Destination {
 	 * that happens to point at it. */
 	bool vertical = false;
 
+	/* Which of OBS's six audio tracks this destination hears, 1 based,
+	 * ascending. Empty means the same sound as the main stream, which is what
+	 * every destination got before this existed.
+	 *
+	 * One track is that track's mix as it is. Several are added together into
+	 * the one sound the platform gets: music on YouTube but not on Twitch is
+	 * tracks 1 and 3 to one and track 1 to the other. RTMP carries one audio
+	 * track that every platform plays, so this never sends them as separate
+	 * tracks, which most platforms would drop. */
+	std::vector<int> audio_tracks;
+
 	bool usable() const { return enabled && !url.empty() && !key.empty(); }
 };
 
