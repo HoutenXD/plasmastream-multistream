@@ -29,6 +29,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <graphics/vec2.h>
 #include <obs-frontend-api.h>
 #include <obs-module.h>
+#include <util/config-file.h>
 #include <util/platform.h>
 
 namespace plasmastream {
@@ -290,6 +291,32 @@ bool attach_video(RunningOutput &running, const Destination &destination, obs_ou
 	return true;
 }
 
+/* Which of OBS's mixes the main stream's audio reads, 0 based.
+ *
+ * Asked of the encoder where libobs can say. Where it cannot, the profile holds
+ * the same answer: Settings > Output's streaming track in Advanced mode, and
+ * always the first in Simple mode. */
+size_t main_mixer_index(obs_encoder_t *shared_audio)
+{
+#if PLASMASTREAM_HAS_MIXER_INDEX
+	if (shared_audio) {
+		return obs_encoder_get_mixer_index(shared_audio);
+	}
+#else
+	(void)shared_audio;
+#endif
+
+	config_t *profile = obs_frontend_get_profile_config();
+	const char *mode = profile ? config_get_string(profile, "Output", "Mode") : nullptr;
+
+	if (!mode || strcmp(mode, "Advanced") != 0) {
+		return 0;
+	}
+
+	const int64_t track = config_get_int(profile, "AdvOut", "TrackIndex");
+	return track >= 1 && track <= 6 ? static_cast<size_t>(track - 1) : 0;
+}
+
 /* The sound: the main stream's encoder, or one of this destination's own.
  *
  * Its own when it was given tracks of its own, when it encodes its own picture
@@ -322,7 +349,7 @@ bool attach_audio(RunningOutput &running, const Destination &destination, obs_en
 	 * not always track 1. Settings > Output can point the stream at any of the
 	 * six, and a destination that silently read track 1 instead would be the
 	 * wrong mix with no way to tell. */
-	size_t mixer_idx = shared_audio ? obs_encoder_get_mixer_index(shared_audio) : 0;
+	size_t mixer_idx = main_mixer_index(shared_audio);
 	audio_t *source = obs_get_audio();
 
 	if (tracks_in(mask) == 1) {

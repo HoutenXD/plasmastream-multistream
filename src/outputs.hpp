@@ -40,6 +40,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 	(LIBOBS_API_MAJOR_VER > 31 || (LIBOBS_API_MAJOR_VER == 31 && LIBOBS_API_MINOR_VER >= 1))
 #endif
 
+/* Whether libobs can say which mix an audio encoder reads. Not in the 30.0 the
+ * Linux build is pinned to, which has the same answer in the profile instead.
+ * Overridable for the same reason as the canvas. */
+#ifndef PLASMASTREAM_HAS_MIXER_INDEX
+#define PLASMASTREAM_HAS_MIXER_INDEX (LIBOBS_API_MAJOR_VER >= 31)
+#endif
+
 namespace plasmastream {
 
 enum class OutputState {
