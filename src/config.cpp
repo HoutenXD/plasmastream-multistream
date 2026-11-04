@@ -220,6 +220,7 @@ void load_config()
 	}
 
 	g_config.canvases_introduced = obs_data_get_bool(data, "canvases_introduced");
+	g_config.youtube_reader_introduced = obs_data_get_bool(data, "youtube_reader_introduced");
 
 	g_config.scene_recording = SceneRecording();
 	obs_data_t *recording = obs_data_get_obj(data, "scene_recording");
@@ -475,6 +476,7 @@ void save_config()
 	obs_data_array_release(sources);
 
 	obs_data_set_bool(data, "canvases_introduced", g_config.canvases_introduced);
+	obs_data_set_bool(data, "youtube_reader_introduced", g_config.youtube_reader_introduced);
 
 	obs_data_t *recording = obs_data_create();
 	obs_data_set_bool(recording, "enabled", g_config.scene_recording.enabled);

@@ -77,6 +77,9 @@ target_sources(
     src/voice.hpp
     src/warnings.cpp
     src/warnings.hpp
+    src/obs-browser-panel.hpp
+    src/ytreader.cpp
+    src/ytreader.hpp
 )
 
 # On-device speech recognition for voice commands. Downloads the runtime and

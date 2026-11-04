@@ -308,6 +308,10 @@ struct Config {
 	 * hidden and most people never find the Docks menu, so it gets opened once
 	 * and then never touched again. */
 	bool canvases_introduced = false;
+
+	/* The same for the YouTube Chat dock, which says whether the reader that
+	 * keeps YouTube chat coming is working. */
+	bool youtube_reader_introduced = false;
 };
 
 /* The framing for a scene, or a default one covering the whole frame. Never
