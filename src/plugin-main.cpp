@@ -28,6 +28,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "vertical.hpp"
 #include "voice.hpp"
 #include "warnings.hpp"
+#include "ytreader.hpp"
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
@@ -149,6 +150,7 @@ bool obs_module_load(void)
 	obs_frontend_add_event_callback(on_frontend_event, nullptr);
 	plasmastream::register_dock();
 	plasmastream::register_canvas_dock();
+	plasmastream::register_youtube_reader_dock();
 
 	obs_log(LOG_INFO, "loaded (version %s), %zu destination(s) configured", PLUGIN_VERSION,
 		plasmastream::config().destinations.size());
