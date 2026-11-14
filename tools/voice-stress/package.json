@@ -1,0 +1,12 @@
+{
+  "name": "voice-stress",
+  "private": true,
+  "description": "Feeds the plugin's voice loop hours of audio through the real sherpa-onnx library. See stress.mjs.",
+  "type": "module",
+  "scripts": {
+    "stress": "node --expose-gc stress.mjs"
+  },
+  "dependencies": {
+    "sherpa-onnx-node": "2.0.1"
+  }
+}

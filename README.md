@@ -352,6 +352,18 @@ an older OBS at all. `PLASMASTREAM_HAS_CANVAS` is what keeps that from meaning
 works everywhere else. The Windows and macOS releases are built against 31.1.1
 and therefore need 31.1; the `.deb` is built against 30 and therefore does not.
 
+## When OBS crashes in the plugin
+
+OBS's crash log names a function and an offset, such as `worker_main+0xb53`,
+and never a line. The Windows build installs `plasmastream-multistream.pdb`
+beside the DLL, and `tools/crash-line.ps1` reads it through Windows' own
+dbghelp.dll to turn that into `voice.cpp:1076`, with no Visual Studio needed.
+Run it against the DLL that crashed, not a newer build.
+
+sherpa-onnx ships no PDB, so a frame inside `sherpa-onnx-c-api.dll` stays an
+address. `tools/voice-stress` feeds the voice loop hours of audio through the
+real library, which is how to reproduce a crash there; see `stress.mjs`.
+
 ## Where this is published
 
 https://github.com/HoutenXD/plasmastream-multistream

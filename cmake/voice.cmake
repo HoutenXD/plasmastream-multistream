@@ -13,8 +13,15 @@
 # src/voice.cpp for why that matters when other plugins bring ONNX Runtime too.
 #
 # Windows only for now. Elsewhere voice.cpp builds as a stub that says so.
+#
+# 2.0.1 at least. Up to 1.13.8 the voice detector counted every sample it had
+# ever taken in a 32-bit number, which runs out after 2^31 samples: 37 hours of
+# microphone at 16 kHz. The next copy then reads outside its buffer and takes
+# OBS down. 2.0.0 made the count 64-bit (k2-fsa/sherpa-onnx#4079) and changed
+# the C ABI to match, so the plugin and sherpa-onnx-c-api.dll must always be
+# replaced together.
 
-set(VOICE_SHERPA_VERSION "1.13.8")
+set(VOICE_SHERPA_VERSION "2.0.1")
 set(VOICE_DEPS "${CMAKE_BINARY_DIR}/voice-deps")
 set(VOICE_DOWNLOADS "${VOICE_DEPS}/downloads")
 set(VOICE_STAGE "${VOICE_DEPS}/stage/voice")
@@ -40,11 +47,20 @@ function(voice_fetch url destination hash)
   endif()
 endfunction()
 
+# The marker names the archive it came from, so a build folder that unpacked an
+# older version unpacks the new one instead of keeping the old files.
 function(voice_extract archive destination)
-  if(NOT EXISTS "${destination}/.extracted")
+  get_filename_component(name "${archive}" NAME)
+  set(extracted "")
+
+  if(EXISTS "${destination}/.extracted")
+    file(READ "${destination}/.extracted" extracted)
+  endif()
+
+  if(NOT extracted STREQUAL "${name}")
     file(REMOVE_RECURSE "${destination}")
     file(ARCHIVE_EXTRACT INPUT "${archive}" DESTINATION "${destination}")
-    file(TOUCH "${destination}/.extracted")
+    file(WRITE "${destination}/.extracted" "${name}")
   endif()
 endfunction()
 
@@ -55,12 +71,12 @@ set(_voice_base "sherpa-onnx-moonshine-base-en-quantized-2026-02-27")
 voice_fetch(
   "${VOICE_RELEASES}/v${VOICE_SHERPA_VERSION}/${_voice_lib_name}.tar.bz2"
   "${VOICE_DOWNLOADS}/${_voice_lib_name}.tar.bz2"
-  "b90992b888710715d613a4fedcd75d5b4db294ef64f3194e4f77ea0a8b387441"
+  "3aea6fc2360ac67b349f61b5cbe237f34b2bb53dc805aa4b3df7ab23ba7ab35c"
 )
 voice_fetch(
   "${VOICE_RAW}/k2-fsa/sherpa-onnx/v${VOICE_SHERPA_VERSION}/sherpa-onnx/c-api/c-api.h"
   "${VOICE_DEPS}/include/sherpa-onnx/c-api/c-api.h"
-  "2a1b95084be8fd1deb3228fcad2fd3f7f0258b64582f7402281ec174c7b7f4ce"
+  "5698f38ba09ad2bdf085c56a6cbbd7741acf15e25f4ce5c7097b9702cadf437f"
 )
 voice_fetch(
   "${VOICE_RELEASES}/asr-models/${_voice_tiny}.tar.bz2"
@@ -131,7 +147,10 @@ file(RENAME "${VOICE_STAGE}/licenses/LICENSE" "${VOICE_STAGE}/licenses/moonshine
 set(VOICE_MODELS_VERSION "moonshine-2026-02-27")
 file(WRITE "${VOICE_STAGE}/models/models.txt" "${VOICE_MODELS_VERSION}\n")
 
-target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE PLASMASTREAM_VOICE SHERPA_ONNX_BUILD_SHARED_LIBS)
+target_compile_definitions(
+  ${CMAKE_PROJECT_NAME}
+  PRIVATE PLASMASTREAM_VOICE SHERPA_ONNX_BUILD_SHARED_LIBS PLASMASTREAM_SHERPA_VERSION="${VOICE_SHERPA_VERSION}"
+)
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${VOICE_DEPS}/include")
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE "${_voice_lib}/sherpa-onnx-c-api.lib" delayimp)
 target_link_options(${CMAKE_PROJECT_NAME} PRIVATE "/DELAYLOAD:sherpa-onnx-c-api.dll")

@@ -30,6 +30,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstring>
 #include <iterator>
 #include <mutex>
@@ -207,6 +208,23 @@ using Clock = std::chrono::steady_clock;
  * mixes at 48 kHz, usually in stereo. */
 constexpr int kModelRate = 16000;
 constexpr int kVadWindow = 512;
+
+/* The detector is told to end a phrase at 12 seconds, but it only does that by
+ * listening harder for a pause, and steady noise such as game audio in the mic
+ * may never give it one. Meanwhile it holds the whole phrase and copies it again
+ * every 32 ms. Past this the phrase is handed over as it stands. No command is
+ * this long, so commands are unaffected; a transcript line this long arrives in
+ * pieces. */
+constexpr int64_t kMaxPhraseSamples = int64_t{kModelRate} * 20;
+
+/* The detector counts every sample it has ever taken. sherpa-onnx 1.13.8 and
+ * older kept that count in 32 bits and read outside its buffer once it passed
+ * 2^31, which is 37 hours of microphone and crashed OBS. 2.0.0 fixed it, and
+ * the plugin starts the detector fresh every six hours as well, so no count
+ * ever gets near a limit again whatever the library does. It waits for a
+ * moment with no speech, which kMaxPhraseSamples keeps from being more than 20
+ * seconds away, so nothing anybody says is cut. */
+constexpr int64_t kVadFreshSamples = int64_t{kModelRate} * 60 * 60 * 6;
 
 /* A phrase is a few seconds. Push-to-talk held longer than this is somebody
  * leaning on a key, and decoding it all would be the one expensive thing here. */
@@ -400,6 +418,20 @@ bool load_runtime(std::string &problem)
 		return false;
 	}
 
+	/* The plugin is compiled against one version's header, and sherpa-onnx
+	 * changes the layout of its structs between versions (2.0.0 did). Any
+	 * other version would read them wrong, so it is refused, which is what an
+	 * update that replaced the plugin but not data/voice/bin would hit. */
+	const char *version = SherpaOnnxGetVersionStr();
+
+	if (!version || std::strcmp(version, PLASMASTREAM_SHERPA_VERSION) != 0) {
+		problem = std::string("The speech runtime in the plugin's folder is version ") + (version ? version : "unknown") +
+			  ", and this plugin needs " PLASMASTREAM_SHERPA_VERSION ". Reinstall the plugin.";
+		blog(LOG_WARNING, "[plasmastream] voice: sherpa-onnx %s, built for %s", version ? version : "unknown",
+		     PLASMASTREAM_SHERPA_VERSION);
+		return false;
+	}
+
 	/* Never unloaded: the delay-load thunks point into these for as long as
 	 * the plugin is loaded. */
 	loaded = true;
@@ -416,7 +448,18 @@ struct Engine {
 	const SherpaOnnxLinearResampler *resampler = nullptr;
 	uint32_t resample_from = 0;
 	std::string model;
+	/* Samples given to the detector since it was created or last reset. */
+	int64_t vad_samples = 0;
+	/* How long the detector has been inside one phrase. */
+	int64_t phrase_samples = 0;
 };
+
+void reset_vad(Engine &engine)
+{
+	SherpaOnnxVoiceActivityDetectorReset(engine.vad);
+	engine.vad_samples = 0;
+	engine.phrase_samples = 0;
+}
 
 void destroy_engine(Engine &engine)
 {
@@ -502,14 +545,26 @@ bool create_engine(Engine &engine, const std::string &model, std::string &proble
 
 std::string decode(const Engine &engine, const float *samples, size_t count)
 {
+	if (!engine.recognizer || !samples || count == 0) {
+		return {};
+	}
+
 	const SherpaOnnxOfflineStream *stream = SherpaOnnxCreateOfflineStream(engine.recognizer);
+
+	if (!stream) {
+		return {};
+	}
+
 	SherpaOnnxAcceptWaveformOffline(stream, kModelRate, samples, static_cast<int32_t>(count));
 	SherpaOnnxDecodeOfflineStream(engine.recognizer, stream);
 
 	const SherpaOnnxOfflineRecognizerResult *result = SherpaOnnxGetOfflineStreamResult(stream);
 	std::string text = result && result->text ? result->text : "";
 
-	SherpaOnnxDestroyOfflineRecognizerResult(result);
+	if (result) {
+		SherpaOnnxDestroyOfflineRecognizerResult(result);
+	}
+
 	SherpaOnnxDestroyOfflineStream(stream);
 
 	const auto first = text.find_first_not_of(" \t\r\n");
@@ -939,6 +994,7 @@ void worker_main()
 	Listener listener;
 	std::vector<float> chunk;
 	std::vector<float> vad_carry;
+	std::vector<float> phrase;
 	std::vector<float> push_audio;
 	bool push_active = false;
 	Clock::time_point push_released{};
@@ -1024,12 +1080,22 @@ void worker_main()
 
 				const float cutoff = 0.99f * 0.5f * static_cast<float>(kModelRate);
 				engine.resampler = SherpaOnnxCreateLinearResampler(static_cast<int32_t>(rate), kModelRate, cutoff, 6);
-				engine.resample_from = rate;
+				engine.resample_from = engine.resampler ? rate : 0;
 			}
 
-			resampled = SherpaOnnxLinearResamplerResample(engine.resampler, samples, static_cast<int32_t>(count), 0);
-			samples = resampled->samples;
-			count = static_cast<size_t>(resampled->n);
+			/* Without a resampler this chunk is at the wrong rate for
+			 * everything after, so it is dropped rather than misheard. */
+			resampled = engine.resampler ? SherpaOnnxLinearResamplerResample(engine.resampler, samples,
+											  static_cast<int32_t>(count), 0)
+						     : nullptr;
+
+			if (resampled && resampled->samples && resampled->n > 0) {
+				samples = resampled->samples;
+				count = static_cast<size_t>(resampled->n);
+			} else {
+				samples = nullptr;
+				count = 0;
+			}
 		}
 
 		const bool held = g_push_to_talk.load();
@@ -1039,7 +1105,7 @@ void worker_main()
 			push_audio.clear();
 			/* Whatever the detector was half way through belongs to before the
 			 * key, not to the command. */
-			SherpaOnnxVoiceActivityDetectorReset(engine.vad);
+			reset_vad(engine);
 			vad_carry.clear();
 			listener.awaiting_command_until = {};
 		}
@@ -1075,13 +1141,39 @@ void worker_main()
 			while (vad_carry.size() - used >= kVadWindow) {
 				SherpaOnnxVoiceActivityDetectorAcceptWaveform(engine.vad, vad_carry.data() + used, kVadWindow);
 				used += kVadWindow;
+				engine.vad_samples += kVadWindow;
+
+				const bool in_phrase = SherpaOnnxVoiceActivityDetectorDetected(engine.vad) != 0;
+				engine.phrase_samples = in_phrase ? engine.phrase_samples + kVadWindow : 0;
+
+				if (engine.phrase_samples >= kMaxPhraseSamples) {
+					SherpaOnnxVoiceActivityDetectorFlush(engine.vad);
+					engine.phrase_samples = 0;
+				}
 
 				while (!SherpaOnnxVoiceActivityDetectorEmpty(engine.vad)) {
+					/* Copied out and released before decoding, so nothing
+					 * the detector owns is read while the model runs. */
 					const SherpaOnnxSpeechSegment *segment = SherpaOnnxVoiceActivityDetectorFront(engine.vad);
-					std::string text = decode(engine, segment->samples, static_cast<size_t>(segment->n));
-					SherpaOnnxDestroySpeechSegment(segment);
+					phrase.clear();
+
+					if (segment && segment->samples && segment->n > 0) {
+						phrase.assign(segment->samples, segment->samples + segment->n);
+					}
+
+					if (segment) {
+						SherpaOnnxDestroySpeechSegment(segment);
+					}
+
 					SherpaOnnxVoiceActivityDetectorPop(engine.vad);
-					listener.heard(text, false);
+
+					if (!phrase.empty()) {
+						listener.heard(decode(engine, phrase.data(), phrase.size()), false);
+					}
+				}
+
+				if (engine.vad_samples >= kVadFreshSamples && !in_phrase) {
+					reset_vad(engine);
 				}
 			}
 
